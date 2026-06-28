@@ -1,56 +1,259 @@
-# Welcome to your Expo app 👋
+# 🌟 Life-OS
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+> A modern AI-powered daily productivity and task management mobile application built with React Native and Expo.
 
-## Get started
+![Version](https://img.shields.io/badge/version-1.0.0-blue)
+![Platform](https://img.shields.io/badge/platform-Android%20%7C%20iOS-lightgrey)
+![License](https://img.shields.io/badge/license-MIT-green)
+![Built With](https://img.shields.io/badge/built%20with-Expo-blueviolet)
 
-1. Install dependencies
+---
 
-   ```bash
-   npm install
-   ```
+## 📖 Overview
 
-2. Start the app
+Life-OS is a smart daily planner designed to help users organize their day, stay productive, and never miss important tasks.
 
-   ```bash
-   npx expo start
-   ```
+The application allows users to create daily tasks, receive timely reminders, track their progress, and maintain consistency through an intuitive and modern mobile interface.
 
-In the output, you'll find options to open the app in a
+---
 
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
+## ✨ Features
 
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
+### 🔐 Authentication
+- User Registration
+- Secure Login
+- JWT Authentication
+- Forgot Password (OTP Verification)
+- Password Reset
 
-## Get a fresh project
+---
 
-When you're ready, run:
+### ✅ Task Management
+- Create Daily Tasks
+- Edit Tasks
+- Delete Tasks
+- Mark Tasks as Completed
+- View Today's Tasks
+- Task Status Tracking
 
-```bash
-npm run reset-project
+---
+
+### 🔔 Smart Notifications
+
+| Notification | Time | Purpose |
+|---|---|---|
+| 🌅 Morning Motivation | 7:00 AM | Start your productive day |
+| ⏰ Task Reminder | On time | Notify before scheduled task |
+| ⚠️ Overdue Alert | Instant | Remind after task deadline |
+| 🌙 Evening Review | 9:00 PM | Review completed and pending tasks |
+
+---
+
+### 👤 User Profile
+- View Profile
+- Update Profile Picture
+- Theme Preferences
+- Account Information
+
+---
+
+### 🎨 UI Features
+- Modern UI
+- Dark Theme
+- Responsive Design
+- Smooth Animations
+- Beautiful Gradient Components
+
+---
+
+## 🛠️ Tech Stack
+
+### Frontend
+
+| Technology | Purpose |
+|---|---|
+| React Native | Core mobile framework |
+| Expo | Development platform |
+| TypeScript | Type-safe development |
+| Expo Router | File-based navigation |
+| Zustand | State management |
+| Axios | HTTP client |
+| AsyncStorage | Local data persistence |
+| Expo Notifications | Push notifications |
+| Expo Image Picker | Profile picture upload |
+| React Native Reanimated | Smooth animations |
+| React Native Gesture Handler | Touch interactions |
+
+### Backend
+- Spring Boot REST API
+- JWT Authentication
+- Modules: Auth, User Profile, Task Management, Notifications
+
+---
+
+## 📁 Project Structure
+
+```
+life-os/
+│
+├── app/
+│   ├── (auth)/
+│   ├── (tabs)/
+│   ├── profile/
+│   ├── task/
+│   └── index.tsx
+│
+├── assets/
+│
+├── components/
+│
+├── constants/
+│
+├── hooks/
+│
+├── services/
+│
+├── store/
+│
+├── types/
+│
+├── utils/
+│
+├── app.json
+├── package.json
+└── README.md
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+---
 
-### Other setup steps
+## 🚀 Installation
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+**Clone the repository**
+```bash
+git clone https://github.com/your-username/life-os.git
+```
 
-## Learn more
+**Move into the project**
+```bash
+cd life-os
+```
 
-To learn more about developing your project with Expo, look at the following resources:
+**Install dependencies**
+```bash
+npm install
+```
 
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
+**Start the development server**
+```bash
+npx expo start
+```
 
-## Join the community
+**For Android**
+```bash
+npx expo run:android
+```
 
-Join our community of developers creating universal apps.
+**For iOS**
+```bash
+npx expo run:ios
+```
 
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+---
+
+## 📱 Screens
+
+- Login
+- Register
+- Forgot Password
+- Dashboard
+- Add Task
+- Task List
+- Task Details
+- Profile
+- Settings
+
+---
+
+## 🔐 Authentication Flow
+
+```
+User
+   │
+   ▼
+Login / Register
+   │
+   ▼
+Spring Boot API
+   │
+   ▼
+JWT Token
+   │
+   ▼
+AsyncStorage
+   │
+   ▼
+Protected Screens
+```
+
+---
+
+## 📦 Main Dependencies
+
+```json
+{
+  "expo": "...",
+  "react-native": "...",
+  "expo-router": "...",
+  "zustand": "...",
+  "axios": "...",
+  "@react-native-async-storage/async-storage": "...",
+  "expo-notifications": "...",
+  "expo-image-picker": "...",
+  "react-native-reanimated": "..."
+}
+```
+
+---
+
+## 🚧 Future Enhancements
+
+- [ ] Google Authentication
+- [ ] AI Task Suggestions
+- [ ] Calendar Integration
+- [ ] Habit Tracker
+- [ ] Productivity Analytics
+- [ ] Voice Task Creation
+- [ ] Cloud Backup
+- [ ] Cross-device Sync
+- [ ] Widget Support
+
+---
+
+## 👨‍💻 Developer
+
+**Pragateesh Hari**
+
+B.Tech Artificial Intelligence & Data Science
+
+Sri Eshwar College of Engineering
+
+---
+
+## 📄 License
+
+This project is licensed under the MIT License.
+
+---
+
+## ⭐ Support
+
+If you like this project, consider giving it a ⭐ on GitHub.
+
+Your support motivates future improvements.
+
+---
+
+## 📬 Contact
+
+- GitHub: https://github.com/Pragatees
+- Email: haripragateesh7@gmail.com
