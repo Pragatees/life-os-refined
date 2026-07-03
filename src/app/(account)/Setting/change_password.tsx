@@ -2,15 +2,48 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   Alert, ActivityIndicator, KeyboardAvoidingView, Platform,
-  Modal, Animated, Pressable, ScrollView,
+  Modal, Animated, Pressable,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { LinearGradient } from "expo-linear-gradient";
 
+// ─── Theme Tokens (Claymorphism — same language as the rest of the app) ────
+// Dark = near-black with warm amber/orange accent.
+// Bright = white / soft grey, same warm accent for consistency.
+// No blue, purple, violet, or pink anywhere in the palette.
 const THEMES = {
-  dark:   { sheet: "#1E293B", inputBg: "#0F172A", accent: "#6366F1", textPrimary: "#F8FAFC", textSecondary: "#94A3B8", border: "#334155", overlay: "rgba(0,0,0,0.6)" },
-  bright: { sheet: "#FFFFFF", inputBg: "#F1F5F9", accent: "#6366F1", textPrimary: "#0F172A", textSecondary: "#64748B", border: "#E2E8F0", overlay: "rgba(0,0,0,0.3)" },
+  dark: {
+    sheet: "#18181B",
+    surfaceAlt: "#212124",
+    inputBg: "#212124",
+    accent: "#FF8A3D",
+    accentGradient: ["#FF8A3D", "#FFB25E"] as const,
+    success: "#3DD68C",
+    warning: "#FFC24B",
+    danger: "#FF6B5B",
+    textPrimary: "#F5F5F4",
+    textSecondary: "#9B9B9F",
+    border: "#28282C",
+    overlay: "rgba(0,0,0,0.65)",
+    shadowDark: "#000000",
+  },
+  bright: {
+    sheet: "#FFFFFF",
+    surfaceAlt: "#EDEDEF",
+    inputBg: "#F4F4F5",
+    accent: "#FF7A2F",
+    accentGradient: ["#FF8A3D", "#FF6B1F"] as const,
+    success: "#22B573",
+    warning: "#F0A93B",
+    danger: "#EF5A4C",
+    textPrimary: "#1C1C1E",
+    textSecondary: "#7A7A80",
+    border: "#E6E6E9",
+    overlay: "rgba(20,15,10,0.4)",
+    shadowDark: "#B9B9C0",
+  },
 };
 
 export default function ChangePasswordModal({ visible, onClose, theme }: { visible: boolean; onClose: () => void; theme: "dark" | "bright" }) {
@@ -64,9 +97,9 @@ export default function ChangePasswordModal({ visible, onClose, theme }: { visib
   }, []);
 
   const getStrengthColor = (level: string) => {
-    if (level === "weak") return "#EF4444";
-    if (level === "medium") return "#F59E0B";
-    return "#10B981";
+    if (level === "weak") return C.danger;
+    if (level === "medium") return C.warning;
+    return C.success;
   };
 
   const getStrengthLabel = (level: string) => {
@@ -130,18 +163,31 @@ export default function ChangePasswordModal({ visible, onClose, theme }: { visib
         <Animated.View
           style={[
             styles.popup,
-            { backgroundColor: C.sheet, opacity: opacityAnim, transform: [{ scale: scaleAnim }] },
+            {
+              backgroundColor: C.sheet,
+              borderColor: C.border,
+              shadowColor: C.shadowDark,
+              opacity: opacityAnim,
+              transform: [{ scale: scaleAnim }],
+            },
           ]}
         >
           {/* Title row */}
           <View style={styles.titleRow}>
-            <Text style={[styles.title, { color: C.textPrimary }]}>Change Password</Text>
-            <TouchableOpacity onPress={dismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Ionicons name="close" size={22} color={C.textSecondary} />
+            <View style={styles.titleLeft}>
+              <View style={[styles.titleIconWrap, { backgroundColor: C.accent + "1E", borderColor: C.accent + "35" }]}>
+                <Ionicons name="lock-closed-outline" size={16} color={C.accent} />
+              </View>
+              <Text style={[styles.title, { color: C.textPrimary }]}>Change Password</Text>
+            </View>
+            <TouchableOpacity
+              onPress={dismiss}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={[styles.closeBtn, { backgroundColor: C.surfaceAlt }]}
+            >
+              <Ionicons name="close" size={17} color={C.textSecondary} />
             </TouchableOpacity>
           </View>
-
-          <View style={[styles.divider, { backgroundColor: C.border }]} />
 
           {/* Current Password */}
           <Text style={[styles.label, { color: C.textSecondary }]}>Current Password</Text>
@@ -156,9 +202,11 @@ export default function ChangePasswordModal({ visible, onClose, theme }: { visib
               autoCapitalize="none"
               autoCorrect={false}
               autoFocus
+              selectionColor={C.accent}
+              cursorColor={C.accent}
             />
-            <TouchableOpacity onPress={() => setCurrentVisible(v => !v)} style={styles.eyeBtn}>
-              <Ionicons name={currentVisible ? "eye-off-outline" : "eye-outline"} size={20} color={C.textSecondary} />
+            <TouchableOpacity onPress={() => setCurrentVisible(v => !v)} style={styles.eyeBtn} hitSlop={8}>
+              <Ionicons name={currentVisible ? "eye-off-outline" : "eye-outline"} size={18} color={C.textSecondary} />
             </TouchableOpacity>
           </View>
 
@@ -174,9 +222,11 @@ export default function ChangePasswordModal({ visible, onClose, theme }: { visib
               secureTextEntry={!newVisible}
               autoCapitalize="none"
               autoCorrect={false}
+              selectionColor={C.accent}
+              cursorColor={C.accent}
             />
-            <TouchableOpacity onPress={() => setNewVisible(v => !v)} style={styles.eyeBtn}>
-              <Ionicons name={newVisible ? "eye-off-outline" : "eye-outline"} size={20} color={C.textSecondary} />
+            <TouchableOpacity onPress={() => setNewVisible(v => !v)} style={styles.eyeBtn} hitSlop={8}>
+              <Ionicons name={newVisible ? "eye-off-outline" : "eye-outline"} size={18} color={C.textSecondary} />
             </TouchableOpacity>
           </View>
 
@@ -188,7 +238,7 @@ export default function ChangePasswordModal({ visible, onClose, theme }: { visib
               </View>
               <Text style={[styles.strengthLabel, { color: C.textSecondary }]}>
                 Password Strength:{" "}
-                <Text style={{ color: getStrengthColor(strength.level) }}>{getStrengthLabel(strength.level)}</Text>
+                <Text style={{ color: getStrengthColor(strength.level), fontWeight: "700" }}>{getStrengthLabel(strength.level)}</Text>
               </Text>
             </View>
           )}
@@ -205,15 +255,19 @@ export default function ChangePasswordModal({ visible, onClose, theme }: { visib
               secureTextEntry={!confirmVisible}
               autoCapitalize="none"
               autoCorrect={false}
+              selectionColor={C.accent}
+              cursorColor={C.accent}
             />
-            <TouchableOpacity onPress={() => setConfirmVisible(v => !v)} style={styles.eyeBtn}>
-              <Ionicons name={confirmVisible ? "eye-off-outline" : "eye-outline"} size={20} color={C.textSecondary} />
+            <TouchableOpacity onPress={() => setConfirmVisible(v => !v)} style={styles.eyeBtn} hitSlop={8}>
+              <Ionicons name={confirmVisible ? "eye-off-outline" : "eye-outline"} size={18} color={C.textSecondary} />
             </TouchableOpacity>
           </View>
 
           {/* Security note */}
-          <View style={[styles.securityCard, { borderColor: "rgba(99,102,241,0.2)" }]}>
-            <Ionicons name="shield-checkmark-outline" size={18} color="#6366F1" />
+          <View style={[styles.securityCard, { backgroundColor: C.accent + "12", borderColor: C.accent + "28" }]}>
+            <View style={[styles.securityIconWrap, { backgroundColor: C.accent + "1E" }]}>
+              <Ionicons name="shield-checkmark-outline" size={15} color={C.accent} />
+            </View>
             <Text style={[styles.securityText, { color: C.textSecondary }]}>
               For your security, updating your password will sign you out.
             </Text>
@@ -221,12 +275,19 @@ export default function ChangePasswordModal({ visible, onClose, theme }: { visib
 
           {/* Save button */}
           <TouchableOpacity
-            style={[styles.btn, { backgroundColor: C.accent, opacity: loading ? 0.7 : 1 }]}
             onPress={handleSave}
             disabled={loading}
             activeOpacity={0.85}
+            style={loading ? styles.btnDisabled : undefined}
           >
-            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Update Password</Text>}
+            <LinearGradient
+              colors={C.accentGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.btn}
+            >
+              {loading ? <ActivityIndicator color="#1A120B" /> : <Text style={styles.btnText}>Update Password</Text>}
+            </LinearGradient>
           </TouchableOpacity>
         </Animated.View>
       </KeyboardAvoidingView>
@@ -247,29 +308,61 @@ const styles = StyleSheet.create({
   popup: {
     width: "100%",
     maxWidth: 420,
-    borderRadius: 20,
+    borderRadius: 26,
+    borderWidth: 1,
     paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 24,
+    paddingTop: 18,
+    paddingBottom: 22,
     elevation: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.3,
+    shadowRadius: 26,
   },
-  titleRow:          { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-  title:             { fontSize: 17, fontWeight: "700" },
-  divider:           { height: 1, marginBottom: 4 },
-  label:             { fontSize: 12, fontWeight: "600", marginBottom: 6, marginTop: 14 },
-  inputWrapper:      { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, minHeight: 48 },
+  titleRow:          { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 18 },
+  titleLeft:         { flexDirection: "row", alignItems: "center", gap: 10 },
+  titleIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  closeBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title:             { fontSize: 15, fontWeight: "800", letterSpacing: -0.2 },
+  label:             { fontSize: 10, fontWeight: "700", letterSpacing: 0.7, textTransform: "uppercase", marginBottom: 8, marginTop: 4 },
+  inputWrapper:      { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 16, paddingHorizontal: 14, minHeight: 50, marginBottom: 6 },
   inputInner:        { flex: 1, paddingVertical: 12, fontSize: 15 },
   eyeBtn:            { paddingLeft: 8 },
-  strengthContainer: { marginTop: 8, marginBottom: 4 },
-  strengthBarBg:     { height: 4, borderRadius: 2, overflow: "hidden", marginBottom: 6 },
-  strengthBar:       { height: "100%", borderRadius: 2 },
+  strengthContainer: { marginTop: 6, marginBottom: 2 },
+  strengthBarBg:     { height: 5, borderRadius: 3, overflow: "hidden", marginBottom: 6 },
+  strengthBar:       { height: "100%", borderRadius: 3 },
   strengthLabel:     { fontSize: 12, fontWeight: "500" },
-  securityCard:      { flexDirection: "row", alignItems: "center", backgroundColor: "rgba(99,102,241,0.08)", padding: 12, borderRadius: 10, borderWidth: 1, marginTop: 16, marginBottom: 4 },
-  securityText:      { fontSize: 13, marginLeft: 10, flex: 1, lineHeight: 18 },
-  btn:               { borderRadius: 10, paddingVertical: 14, alignItems: "center", marginTop: 20 },
-  btnText:           { color: "#fff", fontSize: 15, fontWeight: "700" },
+  securityCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 15,
+    borderWidth: 1,
+    marginTop: 16,
+    marginBottom: 4,
+  },
+  securityIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  securityText:      { fontSize: 12, flex: 1, lineHeight: 17 },
+  btn:               { borderRadius: 16, paddingVertical: 15, alignItems: "center", justifyContent: "center", marginTop: 20 },
+  btnDisabled:       { opacity: 0.7 },
+  btnText:           { color: "#1A120B", fontSize: 14, fontWeight: "800" },
 });

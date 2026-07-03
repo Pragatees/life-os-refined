@@ -15,16 +15,59 @@ import { Ionicons } from "@expo/vector-icons";
 // ── Import the shared store ──────────────────────────────────────────────────
 import { useTaskStore } from "../../store/task";
 
-// ─── Theme Tokens ─────────────────────────────────────────────────────────────
-const DARK = {
-  bg: "#0F172A", surface: "#1E293B", surfaceAlt: "#263348",
-  accent: "#6366F1", success: "#10B981", warning: "#F59E0B", danger: "#EF4444",
-  textPrimary: "#F8FAFC", textSecondary: "#94A3B8", border: "#334155",
+// ─── Theme Tokens (Claymorphism — matches AddTask) ─────────────────────────
+type ThemeTokens = {
+  bg: string;
+  surface: string;
+  surfaceAlt: string;
+  accent: string;
+  accentGradient: readonly [string, string];
+  textPrimary: string;
+  textSecondary: string;
+  border: string;
+  priorityHigh: string;
+  priorityMed: string;
+  priorityLow: string;
+  success: string;
+  warning: string;
+  danger: string;
+  shadowDark: string;
 };
-const BRIGHT = {
-  bg: "#F8FAFC", surface: "#FFFFFF", surfaceAlt: "#F1F5F9",
-  accent: "#6366F1", success: "#10B981", warning: "#F59E0B", danger: "#EF4444",
-  textPrimary: "#0F172A", textSecondary: "#64748B", border: "#E2E8F0",
+
+const DARK: ThemeTokens = {
+  bg: "#0A0A0B",
+  surface: "#18181B",
+  surfaceAlt: "#212124",
+  accent: "#FF8A3D",
+  accentGradient: ["#FF8A3D", "#FFB25E"],
+  textPrimary: "#F5F5F4",
+  textSecondary: "#9B9B9F",
+  border: "#28282C",
+  priorityHigh: "#FF6B5B",
+  priorityMed: "#FFC24B",
+  priorityLow: "#3DD68C",
+  success: "#3DD68C",
+  warning: "#FFC24B",
+  danger: "#FF6B5B",
+  shadowDark: "#000000",
+};
+
+const BRIGHT: ThemeTokens = {
+  bg: "#F4F4F5",
+  surface: "#FFFFFF",
+  surfaceAlt: "#EDEDEF",
+  accent: "#FF7A2F",
+  accentGradient: ["#FF8A3D", "#FF6B1F"],
+  textPrimary: "#1C1C1E",
+  textSecondary: "#7A7A80",
+  border: "#E6E6E9",
+  priorityHigh: "#EF5A4C",
+  priorityMed: "#F0A93B",
+  priorityLow: "#22B573",
+  success: "#22B573",
+  warning: "#F0A93B",
+  danger: "#EF5A4C",
+  shadowDark: "#B9B9C0",
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -41,7 +84,7 @@ export interface ProgressTaskProps {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-function getProgressColor(pct: number, C: typeof DARK): string {
+function getProgressColor(pct: number, C: ThemeTokens): string {
   if (pct > 70) return C.success;
   if (pct >= 40) return C.warning;
   return pct === 0 ? C.border : C.danger;
@@ -70,7 +113,7 @@ const R    = (RING - SW) / 2;
 const CIRC = 2 * Math.PI * R;
 const AnimatedCircle = Animated.createAnimatedComponent(Circle);
 
-function ProgressRing({ percentage, color, C }: { percentage: number; color: string; C: typeof DARK }) {
+function ProgressRing({ percentage, color, C }: { percentage: number; color: string; C: ThemeTokens }) {
   const anim = useRef(new Animated.Value(0)).current;
   const [display, setDisplay] = useState(0);
 
@@ -105,9 +148,9 @@ function ProgressRing({ percentage, color, C }: { percentage: number; color: str
 }
 
 // ─── Stat Pill ────────────────────────────────────────────────────────────────
-function StatPill({ icon, label, value, color, C }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: number; color: string; C: typeof DARK }) {
+function StatPill({ icon, label, value, color, C }: { icon: keyof typeof Ionicons.glyphMap; label: string; value: number; color: string; C: ThemeTokens }) {
   return (
-    <View style={[stat.pill, { backgroundColor: C.surface, borderColor: C.border }]}>
+    <View style={[stat.pill, { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark }]}>
       <View style={[stat.iconWrap, { backgroundColor: color + "1A", borderColor: color + "33" }]}>
         <Ionicons name={icon} size={14} color={color} />
       </View>
@@ -117,14 +160,14 @@ function StatPill({ icon, label, value, color, C }: { icon: keyof typeof Ionicon
   );
 }
 const stat = StyleSheet.create({
-  pill:    { flex: 1, borderWidth: 1, borderRadius: 12, paddingVertical: 14, alignItems: "center", gap: 4 },
-  iconWrap:{ width: 28, height: 28, borderRadius: 8, borderWidth: 1, alignItems: "center", justifyContent: "center", marginBottom: 2 },
+  pill:    { flex: 1, borderWidth: 1, borderRadius: 16, paddingVertical: 14, alignItems: "center", gap: 4, shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.1, shadowRadius: 10, elevation: 2 },
+  iconWrap:{ width: 28, height: 28, borderRadius: 9, borderWidth: 1, alignItems: "center", justifyContent: "center", marginBottom: 2 },
   value:   { fontSize: 18, fontWeight: "800", letterSpacing: -0.3 },
   label:   { fontSize: 10, fontWeight: "600", letterSpacing: 0.5, textTransform: "uppercase" },
 });
 
 // ─── Achievement Badge ────────────────────────────────────────────────────────
-function AchievementBadge({ item, index, C }: { item: Achievement; index: number; C: typeof DARK }) {
+function AchievementBadge({ item, index, C }: { item: Achievement; index: number; C: ThemeTokens }) {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     Animated.timing(fadeAnim, { toValue: 1, duration: 300, delay: index * 90, useNativeDriver: true }).start();
@@ -149,14 +192,14 @@ function AchievementBadge({ item, index, C }: { item: Achievement; index: number
   );
 }
 const ab = StyleSheet.create({
-  card:    { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderRadius: 12, padding: 11, marginBottom: 8 },
-  iconWrap:{ width: 32, height: 32, borderRadius: 8, borderWidth: 1, alignItems: "center", justifyContent: "center" },
+  card:    { flexDirection: "row", alignItems: "center", gap: 10, borderWidth: 1, borderRadius: 16, padding: 12, marginBottom: 8 },
+  iconWrap:{ width: 32, height: 32, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" },
   title:   { fontSize: 13, fontWeight: "700", marginBottom: 1 },
   desc:    { fontSize: 11 },
 });
 
 // ─── Empty State ──────────────────────────────────────────────────────────────
-function EmptyState({ C }: { C: typeof DARK }) {
+function EmptyState({ C }: { C: ThemeTokens }) {
   return (
     <View style={{ alignItems: "center", paddingVertical: 40 }}>
       <Ionicons name="sparkles-outline" size={26} color={C.accent} style={{ marginBottom: 12 }} />
@@ -168,12 +211,12 @@ function EmptyState({ C }: { C: typeof DARK }) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function ProgressTaskComponent({ theme = "dark" }: ProgressTaskProps) {
-  const C = theme === "bright" ? BRIGHT : DARK;
+  const C: ThemeTokens = theme === "bright" ? BRIGHT : DARK;
 
   // ── Read from the shared store — NO local fetch logic needed ─────────────
-  const tasks      = useTaskStore((s:any) => s.tasks);
-  const loading    = useTaskStore((s:any) => s.loading);
-  const fetchTasks = useTaskStore((s:any) => s.fetchTasks);
+  const tasks      = useTaskStore((s: any) => s.tasks);
+  const loading    = useTaskStore((s: any) => s.loading);
+  const fetchTasks = useTaskStore((s: any) => s.fetchTasks);
 
   const [refreshing, setRefreshing] = useState(false);
   const fadeAnim  = useRef(new Animated.Value(0)).current;
@@ -197,7 +240,7 @@ export default function ProgressTaskComponent({ theme = "dark" }: ProgressTaskPr
 
   // ── Derived values — computed from store data, no local state ────────────
   const total      = tasks.length;
-  const completed  = tasks.filter((t:any) => t.completed).length;
+  const completed  = tasks.filter((t: any) => t.completed).length;
   const pending    = total - completed;
   const percentage = total === 0 ? 0 : Math.round((completed / total) * 100);
   const ringColor  = getProgressColor(percentage, C);
@@ -225,7 +268,7 @@ export default function ProgressTaskComponent({ theme = "dark" }: ProgressTaskPr
             <Text style={{ fontSize: 18, fontWeight: "800", color: C.textPrimary, letterSpacing: -0.3, marginBottom: 3 }}>Today's Progress</Text>
             <Text style={{ fontSize: 12, color: C.textSecondary }}>{getMotivation(percentage, total)}</Text>
           </View>
-          <View style={{ width: 34, height: 34, borderRadius: 10, borderWidth: 1, borderColor: ringColor + "40", backgroundColor: ringColor + "1A", alignItems: "center", justifyContent: "center" }}>
+          <View style={{ width: 34, height: 34, borderRadius: 11, borderWidth: 1, borderColor: ringColor + "40", backgroundColor: ringColor + "1A", alignItems: "center", justifyContent: "center" }}>
             <Ionicons name="trending-up" size={15} color={ringColor} />
           </View>
         </View>
@@ -233,7 +276,7 @@ export default function ProgressTaskComponent({ theme = "dark" }: ProgressTaskPr
         {total === 0 ? <EmptyState C={C} /> : (
           <>
             {/* Ring */}
-            <View style={{ backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, borderRadius: 16, paddingVertical: 24, marginBottom: 14 }}>
+            <View style={{ backgroundColor: C.surface, borderWidth: 1, borderColor: C.border, borderRadius: 22, paddingVertical: 24, marginBottom: 14, shadowColor: C.shadowDark, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.14, shadowRadius: 18, elevation: 4 }}>
               <ProgressRing percentage={percentage} color={ringColor} C={C} />
             </View>
 

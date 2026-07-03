@@ -1,19 +1,42 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity,
   StyleSheet, Alert, ActivityIndicator,
+  KeyboardAvoidingView, Platform, ScrollView, Animated,
 } from "react-native";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
+import { LinearGradient } from "expo-linear-gradient";
+import { Feather } from "@expo/vector-icons";
 
 const BASE_URL = "https://life-os-backend-1ozl.onrender.com/api";
 const MAX_REQUESTS_PER_DAY = 3;
 const COOLDOWN_SECONDS = 15 * 60; // 15 minutes
 
+// ─── Theme Tokens (Claymorphism — same language as Login/SignUp) ───────────
+// Near-black background, warm amber/orange accent, soft clay shadows.
+// No blue, purple, violet, or pink anywhere in the palette.
+const T = {
+  bg: ["#0A0A0B", "#141210", "#1C1712"] as const,
+  surface: "rgba(24, 24, 27, 0.85)",
+  surfaceAlt: "rgba(255, 138, 61, 0.08)",
+  accent: "#FF8A3D",
+  accentGradient: ["#FF8A3D", "#FFB25E"] as const,
+  success: "#3DD68C",
+  warning: "#FFC24B",
+  danger: "#FF6B5B",
+  textPrimary: "#F5F5F4",
+  textSecondary: "rgba(245, 245, 244, 0.62)",
+  textFaint: "rgba(245, 245, 244, 0.38)",
+  border: "rgba(255, 138, 61, 0.18)",
+  borderFocused: "#FF8A3D",
+};
+
 export default function ForgotPassword() {
   const [email, setEmail] = useState("");
   const [loading, setLoading] = useState(false);
+  const [focused, setFocused] = useState(false);
 
   // Timer state
   const [cooldownRemaining, setCooldownRemaining] = useState(0); // seconds
@@ -21,6 +44,18 @@ export default function ForgotPassword() {
   // Request count state
   const [requestsUsed, setRequestsUsed] = useState(0);
   const [blockedUntil, setBlockedUntil] = useState<number | null>(null); // timestamp ms
+
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(18)).current;
+  const logoScale = useRef(new Animated.Value(0.85)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 420, useNativeDriver: true }),
+      Animated.spring(logoScale, { toValue: 1, useNativeDriver: true, speed: 14, bounciness: 8 }),
+    ]).start();
+  }, [fadeAnim, slideAnim, logoScale]);
 
   // Load persisted state on mount
   useEffect(() => {
@@ -147,125 +182,312 @@ export default function ForgotPassword() {
   const buttonDisabled = loading || cooldownRemaining > 0 || isBlocked;
 
   return (
-    <View style={styles.container}>
-      <View style={styles.header}>
-        <Text style={styles.title}>Forgot Password</Text>
-        <Text style={styles.subtitle}>Enter your email to receive a reset code</Text>
-      </View>
+    <LinearGradient
+      colors={T.bg}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.gradientBackground}
+    >
+      {/* Static decorative clay blobs */}
+      <View style={[styles.blob, styles.blobOne]} />
+      <View style={[styles.blob, styles.blobTwo]} />
 
-      <View style={styles.form}>
-        <Text style={styles.label}>Email address</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Enter your email"
-          placeholderTextColor="#9ca3af"
-          autoCapitalize="none"
-          keyboardType="email-address"
-          value={email}
-          onChangeText={setEmail}
-        />
-
-        {/* Attempts indicator */}
-        {!isBlocked && (
-          <View style={styles.attemptsRow}>
-            <Text style={[
-              styles.attemptsText,
-              attemptsLeft === 1 && { color: "#dc2626" },
-              attemptsLeft === 2 && { color: "#d97706" },
-            ]}>
-              {attemptsLeft} of {MAX_REQUESTS_PER_DAY} requests remaining today
-            </Text>
-          </View>
-        )}
-
-        {/* 24h block warning */}
-        {isBlocked && (
-          <View style={styles.blockedBanner}>
-            <Text style={styles.blockedText}>
-              🚫 You've reached the daily limit (3 requests). Try again in {blockedHoursLeft} hour(s).
-            </Text>
-          </View>
-        )}
-
-        {/* 15-min cooldown timer */}
-        {cooldownRemaining > 0 && !isBlocked && (
-          <View style={styles.timerBanner}>
-            <Text style={styles.timerText}>
-              ⏱ Next OTP available in{" "}
-              <Text style={styles.timerCount}>{formatTime(cooldownRemaining)}</Text>
-            </Text>
-          </View>
-        )}
-
-        <TouchableOpacity
-          style={[styles.button, buttonDisabled && styles.buttonDisabled]}
-          onPress={sendOtp}
-          disabled={buttonDisabled}
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
         >
-          {loading ? (
-            <ActivityIndicator color="#ffffff" />
-          ) : (
-            <Text style={styles.buttonText}>
-              {cooldownRemaining > 0 ? `Wait ${formatTime(cooldownRemaining)}` : "Send OTP"}
-            </Text>
-          )}
-        </TouchableOpacity>
+          <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
+            {/* Header */}
+            <View style={styles.header}>
+              <Animated.View style={[styles.logoIconWrap, { transform: [{ scale: logoScale }] }]}>
+                <LinearGradient
+                  colors={T.accentGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.logoGradient}
+                >
+                  <Feather name="key" size={26} color="#1A120B" />
+                </LinearGradient>
+              </Animated.View>
+              <Text style={styles.title}>Forgot Password</Text>
+              <Text style={styles.subtitle}>Enter your email to receive a reset code</Text>
+            </View>
 
-        {/* Spam notice */}
-        <View style={styles.spamNotice}>
-          <Text style={styles.spamText}>
-            📬 Check your spam or junk folder if you don't see the email within a minute.
-          </Text>
-        </View>
-      </View>
+            {/* Form Card */}
+            <View style={styles.formWrap}>
+              <View style={styles.form}>
+                <Text style={styles.label}>Email address</Text>
+                <View style={[styles.inputWrap, focused && styles.inputWrapFocused]}>
+                  <View style={styles.inputIconWrap}>
+                    <Feather name="mail" size={16} color={focused ? T.accent : T.textFaint} />
+                  </View>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Enter your email"
+                    placeholderTextColor={T.textFaint}
+                    autoCapitalize="none"
+                    keyboardType="email-address"
+                    value={email}
+                    onChangeText={setEmail}
+                    onFocus={() => setFocused(true)}
+                    onBlur={() => setFocused(false)}
+                    selectionColor={T.accent}
+                    cursorColor={T.accent}
+                  />
+                </View>
 
-      <TouchableOpacity style={styles.backLink} onPress={() => router.back()}>
-        <Text style={styles.backText}>← Back to login</Text>
-      </TouchableOpacity>
-    </View>
+                {/* Attempts indicator */}
+                {!isBlocked && (
+                  <Text
+                    style={[
+                      styles.attemptsText,
+                      attemptsLeft === 1 && { color: T.danger },
+                      attemptsLeft === 2 && { color: T.warning },
+                    ]}
+                  >
+                    {attemptsLeft} of {MAX_REQUESTS_PER_DAY} requests remaining today
+                  </Text>
+                )}
+
+                {/* 24h block warning */}
+                {isBlocked && (
+                  <View style={[styles.banner, { backgroundColor: T.danger + "16", borderColor: T.danger + "35" }]}>
+                    <Feather name="slash" size={14} color={T.danger} style={styles.bannerIcon} />
+                    <Text style={[styles.bannerText, { color: T.danger }]}>
+                      You've reached the daily limit (3 requests). Try again in {blockedHoursLeft} hour(s).
+                    </Text>
+                  </View>
+                )}
+
+                {/* 15-min cooldown timer */}
+                {cooldownRemaining > 0 && !isBlocked && (
+                  <View style={[styles.banner, { backgroundColor: T.warning + "16", borderColor: T.warning + "35" }]}>
+                    <Feather name="clock" size={14} color={T.warning} style={styles.bannerIcon} />
+                    <Text style={[styles.bannerText, { color: T.warning }]}>
+                      Next OTP available in{" "}
+                      <Text style={styles.timerCount}>{formatTime(cooldownRemaining)}</Text>
+                    </Text>
+                  </View>
+                )}
+
+                <TouchableOpacity
+                  style={styles.buttonOuter}
+                  activeOpacity={0.85}
+                  onPress={sendOtp}
+                  disabled={buttonDisabled}
+                >
+                  <LinearGradient
+                    colors={buttonDisabled ? ["#4A3A28", "#4A3A28"] : T.accentGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.button}
+                  >
+                    {loading ? (
+                      <ActivityIndicator color="#1A120B" />
+                    ) : (
+                      <Text style={styles.buttonText}>
+                        {cooldownRemaining > 0 ? `Wait ${formatTime(cooldownRemaining)}` : "Send OTP"}
+                      </Text>
+                    )}
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                {/* Spam notice */}
+                <View style={[styles.banner, styles.spamNotice, { backgroundColor: T.accent + "12", borderColor: T.accent + "28" }]}>
+                  <Feather name="inbox" size={14} color={T.accent} style={styles.bannerIcon} />
+                  <Text style={[styles.bannerText, { color: T.textSecondary }]}>
+                    Check your spam or junk folder if you don't see the email within a minute.
+                  </Text>
+                </View>
+              </View>
+            </View>
+
+            <TouchableOpacity style={styles.backLink} onPress={() => router.back()} hitSlop={8}>
+              <Feather name="arrow-left" size={14} color={T.accent} style={{ marginRight: 6 }} />
+              <Text style={styles.backText}>Back to login</Text>
+            </TouchableOpacity>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, justifyContent: "center", padding: 24, backgroundColor: "#f9fafb" },
-  header: { alignItems: "center", marginBottom: 32 },
-  title: { fontSize: 28, fontWeight: "800", color: "#2563eb", letterSpacing: -0.5 },
-  subtitle: { fontSize: 14, color: "#6b7280", marginTop: 6, textAlign: "center" },
+  gradientBackground: {
+    flex: 1,
+    overflow: "hidden",
+  },
+  blob: {
+    position: "absolute",
+    borderRadius: 999,
+    backgroundColor: T.accent,
+    opacity: 0.1,
+  },
+  blobOne: {
+    width: 260,
+    height: 260,
+    top: -70,
+    left: -80,
+  },
+  blobTwo: {
+    width: 220,
+    height: 220,
+    bottom: -60,
+    right: -80,
+    backgroundColor: "#FFB25E",
+    opacity: 0.07,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
+    padding: 24,
+    paddingTop: 60,
+    paddingBottom: 40,
+  },
+  header: {
+    alignItems: "center",
+    marginBottom: 30,
+  },
+  logoIconWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 21,
+    marginBottom: 16,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+    elevation: 8,
+  },
+  logoGradient: {
+    width: 64,
+    height: 64,
+    borderRadius: 21,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title: {
+    fontSize: 26,
+    fontWeight: "800",
+    color: T.textPrimary,
+    letterSpacing: -0.5,
+    textAlign: "center",
+  },
+  subtitle: {
+    fontSize: 13,
+    color: T.textSecondary,
+    marginTop: 6,
+    textAlign: "center",
+  },
+  formWrap: {
+    width: "100%",
+  },
   form: {
-    backgroundColor: "#ffffff", borderRadius: 16, padding: 24,
-    shadowColor: "#000", shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06, shadowRadius: 8, elevation: 3,
+    backgroundColor: T.surface,
+    borderRadius: 26,
+    borderWidth: 1,
+    borderColor: T.border,
+    padding: 22,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.3,
+    shadowRadius: 26,
+    elevation: 10,
   },
-  label: { fontSize: 13, fontWeight: "600", color: "#374151", marginBottom: 6 },
+  label: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    color: T.textSecondary,
+    marginBottom: 8,
+  },
+  inputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: T.border,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    backgroundColor: T.surfaceAlt,
+    marginBottom: 10,
+  },
+  inputWrapFocused: {
+    borderColor: T.borderFocused,
+    backgroundColor: "rgba(255, 138, 61, 0.14)",
+  },
+  inputIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 8,
+  },
   input: {
-    borderWidth: 1, borderColor: "#e5e7eb", borderRadius: 10,
-    paddingHorizontal: 14, paddingVertical: 13, marginBottom: 10,
-    fontSize: 15, color: "#111827", backgroundColor: "#f9fafb",
+    flex: 1,
+    paddingVertical: 13,
+    fontSize: 15,
+    color: T.textPrimary,
   },
-  attemptsRow: { marginBottom: 12 },
-  attemptsText: { fontSize: 12, color: "#6b7280", textAlign: "right" },
-  blockedBanner: {
-    backgroundColor: "#fef2f2", borderRadius: 8, padding: 12,
-    borderWidth: 1, borderColor: "#fca5a5", marginBottom: 16,
+  attemptsText: {
+    fontSize: 11,
+    color: T.textSecondary,
+    textAlign: "right",
+    marginBottom: 4,
   },
-  blockedText: { fontSize: 13, color: "#dc2626", lineHeight: 18 },
-  timerBanner: {
-    backgroundColor: "#fffbeb", borderRadius: 8, padding: 12,
-    borderWidth: 1, borderColor: "#fcd34d", marginBottom: 16,
+  banner: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    borderRadius: 14,
+    borderWidth: 1,
+    padding: 12,
+    marginTop: 10,
   },
-  timerText: { fontSize: 13, color: "#92400e" },
-  timerCount: { fontWeight: "700", fontSize: 15 },
+  bannerIcon: { marginRight: 9, marginTop: 1 },
+  bannerText: { fontSize: 12, flex: 1, lineHeight: 17 },
+  timerCount: { fontWeight: "800", fontSize: 13 },
+  buttonOuter: {
+    borderRadius: 18,
+    overflow: "hidden",
+    marginTop: 18,
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+  },
   button: {
-    backgroundColor: "#2563eb", paddingVertical: 15,
-    borderRadius: 10, alignItems: "center", marginBottom: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 16,
+    borderRadius: 18,
   },
-  buttonDisabled: { opacity: 0.5 },
-  buttonText: { color: "#ffffff", fontSize: 16, fontWeight: "700" },
+  buttonText: {
+    color: "#1A120B",
+    fontSize: 15,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+  },
   spamNotice: {
-    backgroundColor: "#eff6ff", borderRadius: 8, padding: 12,
-    borderWidth: 1, borderColor: "#bfdbfe",
+    marginTop: 14,
   },
-  spamText: { fontSize: 12, color: "#1d4ed8", lineHeight: 18 },
-  backLink: { alignItems: "center", marginTop: 24 },
-  backText: { fontSize: 14, color: "#2563eb", fontWeight: "500" },
+  backLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 26,
+  },
+  backText: {
+    fontSize: 13,
+    color: T.accent,
+    fontWeight: "700",
+  },
 });

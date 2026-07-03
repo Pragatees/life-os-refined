@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import {
   View,
   Text,
@@ -10,15 +10,37 @@ import {
   KeyboardAvoidingView,
   Platform,
   ScrollView,
+  Animated,
 } from "react-native";
 import { router } from "expo-router";
+import { LinearGradient } from "expo-linear-gradient";
+import { Feather } from "@expo/vector-icons";
 
 const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
+
+// ─── Theme Tokens (Claymorphism — same language as the rest of the app) ────
+// Near-black background, warm amber/orange accent, soft clay shadows.
+// No blue, purple, violet, or pink anywhere in the palette.
+const T = {
+  bg: ["#0A0A0B", "#141210", "#1C1712"],
+  surface: "rgba(24, 24, 27, 0.85)",
+  surfaceAlt: "rgba(255, 138, 61, 0.08)",
+  accent: "#FF8A3D",
+  accentGradient: ["#FF8A3D", "#FFB25E"],
+  success: "#3DD68C",
+  warning: "#FFC24B",
+  danger: "#FF6B5B",
+  textPrimary: "#F5F5F4",
+  textSecondary: "rgba(245, 245, 244, 0.62)",
+  textFaint: "rgba(245, 245, 244, 0.38)",
+  border: "rgba(255, 138, 61, 0.18)",
+  borderFocused: "#FF8A3D",
+};
 
 const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 
 function getStrength(pwd) {
-  if (!pwd.length) return { width: 0, color: "#e5e7eb", label: "" };
+  if (!pwd.length) return { width: 0, color: T.textFaint, label: "" };
   const score = [
     pwd.length >= 8,
     /[A-Z]/.test(pwd),
@@ -26,33 +48,49 @@ function getStrength(pwd) {
     /[0-9]/.test(pwd),
     /[^A-Za-z0-9]/.test(pwd),
   ].filter(Boolean).length;
-  if (score <= 2) return { width: 33, color: "#ef4444", label: "Weak" };
-  if (score <= 3) return { width: 66, color: "#f59e0b", label: "Fair" };
-  return { width: 100, color: "#10b981", label: "Strong" };
+  if (score <= 2) return { width: 33, color: T.danger, label: "Weak" };
+  if (score <= 3) return { width: 66, color: T.warning, label: "Fair" };
+  return { width: 100, color: T.success, label: "Strong" };
 }
 
 export default function SignUp() {
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
-  const [email, setEmail]       = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [confirm, setConfirm]   = useState("");
-  const [loading, setLoading]   = useState(false);
-  const [errors, setErrors]     = useState({});
+  const [confirm, setConfirm] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [errors, setErrors] = useState({});
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirm, setShowConfirm] = useState(false);
+  const [focusedField, setFocusedField] = useState(null);
 
-  const clearError = (key) => setErrors((e) => ({ ...e, [key]: "" }));
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const slideAnim = useRef(new Animated.Value(18)).current;
+  const logoScale = useRef(new Animated.Value(0.85)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 420, useNativeDriver: true }),
+      Animated.spring(logoScale, { toValue: 1, useNativeDriver: true, speed: 14, bounciness: 8 }),
+    ]).start();
+  }, [fadeAnim, slideAnim, logoScale]);
+
+  const clearError = (key) =>
+    setErrors((e) => ({ ...e, [key]: undefined }));
 
   const validate = () => {
     const e = {};
-    if (!fullName.trim())                e.fullName = "Full name is required";
-    if (!username.trim())                e.username = "Username is required";
+    if (!fullName.trim()) e.fullName = "Full name is required";
+    if (!username.trim()) e.username = "Username is required";
     else if (username.trim().length < 3) e.username = "At least 3 characters";
-    if (!email.trim())                   e.email = "Email is required";
-    else if (!isEmail(email.trim()))     e.email = "Enter a valid email";
-    if (!password)                       e.password = "Password is required";
-    else if (password.length < 6)        e.password = "At least 6 characters";
-    if (!confirm)                        e.confirm = "Please confirm your password";
-    else if (password !== confirm)       e.confirm = "Passwords don't match";
+    if (!email.trim()) e.email = "Email is required";
+    else if (!isEmail(email.trim())) e.email = "Enter a valid email";
+    if (!password) e.password = "Password is required";
+    else if (password.length < 6) e.password = "At least 6 characters";
+    if (!confirm) e.confirm = "Please confirm your password";
+    else if (password !== confirm) e.confirm = "Passwords don't match";
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -71,7 +109,7 @@ export default function SignUp() {
           password,
         }),
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       if (res.ok) {
         Alert.alert("Account Created", data.message || "You're all set.", [
           { text: "Sign In", onPress: () => router.replace("/login") },
@@ -88,190 +126,436 @@ export default function SignUp() {
 
   const strength = getStrength(password);
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === "ios" ? "padding" : undefined}
-    >
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <Text style={styles.title}>Life-OS</Text>
-          <Text style={styles.subtitle}>Create your account</Text>
-        </View>
+  const renderField = (opts) => {
+    const {
+      field, label, icon, value, onChangeText, placeholder,
+      secure, toggleSecure, secureVisible, keyboardType, autoCapitalize,
+    } = opts;
+    const focused = focusedField === field;
+    const hasError = !!errors[field];
 
-        {/* Form */}
-        <View style={styles.form}>
-
-          {/* Full Name */}
-          <Text style={styles.label}>Full Name</Text>
+    return (
+      <>
+        <Text style={styles.label}>{label}</Text>
+        <View
+          style={[
+            styles.inputWrap,
+            focused && styles.inputWrapFocused,
+            hasError && styles.inputWrapError,
+          ]}
+        >
+          <View style={styles.inputIconWrap}>
+            <Feather
+              name={icon}
+              size={16}
+              color={focused ? T.accent : T.textFaint}
+            />
+          </View>
           <TextInput
-            style={[styles.input, !!errors.fullName && styles.inputError]}
-            placeholder="Enter your full name"
-            placeholderTextColor="#9ca3af"
-            autoCapitalize="words"
-            value={fullName}
-            onChangeText={(t) => { setFullName(t); clearError("fullName"); }}
+            style={styles.input}
+            placeholder={placeholder}
+            placeholderTextColor={T.textFaint}
+            autoCapitalize={autoCapitalize ?? "none"}
+            keyboardType={keyboardType ?? "default"}
+            secureTextEntry={secure ? !secureVisible : false}
+            value={value}
             editable={!loading}
+            onChangeText={(t) => {
+              onChangeText(t);
+              clearError(field);
+            }}
+            onFocus={() => setFocusedField(field)}
+            onBlur={() => setFocusedField(null)}
+            selectionColor={T.accent}
+            cursorColor={T.accent}
           />
-          {!!errors.fullName && <Text style={styles.errorText}>{errors.fullName}</Text>}
-
-          {/* Username */}
-          <Text style={styles.label}>Username</Text>
-          <TextInput
-            style={[styles.input, !!errors.username && styles.inputError]}
-            placeholder="Enter your username"
-            placeholderTextColor="#9ca3af"
-            autoCapitalize="none"
-            value={username}
-            onChangeText={(t) => { setUsername(t); clearError("username"); }}
-            editable={!loading}
-          />
-          {!!errors.username && <Text style={styles.errorText}>{errors.username}</Text>}
-
-          {/* Email */}
-          <Text style={styles.label}>Email</Text>
-          <TextInput
-            style={[styles.input, !!errors.email && styles.inputError]}
-            placeholder="Enter your email"
-            placeholderTextColor="#9ca3af"
-            autoCapitalize="none"
-            keyboardType="email-address"
-            value={email}
-            onChangeText={(t) => { setEmail(t); clearError("email"); }}
-            editable={!loading}
-          />
-          {!!errors.email && <Text style={styles.errorText}>{errors.email}</Text>}
-
-          {/* Password */}
-          <Text style={styles.label}>Password</Text>
-          <TextInput
-            style={[styles.input, !!errors.password && styles.inputError]}
-            placeholder="Enter your password"
-            placeholderTextColor="#9ca3af"
-            autoCapitalize="none"
-            secureTextEntry
-            value={password}
-            onChangeText={(t) => { setPassword(t); clearError("password"); }}
-            editable={!loading}
-          />
-          {!!errors.password && <Text style={styles.errorText}>{errors.password}</Text>}
-
-          {/* Strength bar */}
-          {password.length > 0 && (
-            <View style={styles.strengthContainer}>
-              <View style={styles.strengthBarBg}>
-                <View
-                  style={[
-                    styles.strengthBar,
-                    { width: `${strength.width}%`, backgroundColor: strength.color },
-                  ]}
-                />
-              </View>
-              <Text style={[styles.strengthLabel, { color: strength.color }]}>
-                {strength.label}
-              </Text>
-            </View>
+          {secure && toggleSecure && (
+            <TouchableOpacity onPress={toggleSecure} hitSlop={8}>
+              <Feather
+                name={secureVisible ? "eye-off" : "eye"}
+                size={16}
+                color={T.textFaint}
+              />
+            </TouchableOpacity>
           )}
-
-          {/* Confirm Password */}
-          <Text style={styles.label}>Confirm Password</Text>
-          <TextInput
-            style={[styles.input, !!errors.confirm && styles.inputError]}
-            placeholder="Confirm your password"
-            placeholderTextColor="#9ca3af"
-            autoCapitalize="none"
-            secureTextEntry
-            value={confirm}
-            onChangeText={(t) => { setConfirm(t); clearError("confirm"); }}
-            editable={!loading}
-          />
-          {!!errors.confirm && <Text style={styles.errorText}>{errors.confirm}</Text>}
-
-          {/* Submit */}
-          <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
-            onPress={handleSignUp}
-            disabled={loading}
-          >
-            {loading
-              ? <ActivityIndicator color="#ffffff" />
-              : <Text style={styles.buttonText}>Create Account</Text>
-            }
-          </TouchableOpacity>
         </View>
+        {hasError && (
+          <View style={styles.errorRow}>
+            <Feather name="alert-circle" size={11} color={T.danger} style={styles.errorIcon} />
+            <Text style={styles.errorText}>{errors[field]}</Text>
+          </View>
+        )}
+        {!hasError && <View style={styles.fieldSpacer} />}
+      </>
+    );
+  };
 
-        {/* Sign in link */}
-        <View style={styles.signinContainer}>
-          <Text style={styles.signinPrompt}>Already have an account? </Text>
-          <TouchableOpacity onPress={() => router.replace("/login")} disabled={loading}>
-            <Text style={styles.signinLink}>Sign in</Text>
-          </TouchableOpacity>
-        </View>
+  return (
+    <LinearGradient
+      colors={T.bg}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 1 }}
+      style={styles.gradientBackground}
+    >
+      {/* Static decorative clay blobs */}
+      <View style={[styles.blob, styles.blobOne]} />
+      <View style={[styles.blob, styles.blobTwo]} />
 
-        {/* Footer */}
-        <Text style={styles.footer}>
-          By signing up you agree to our{" "}
-          <Text style={styles.footerLink}>Terms</Text>
-          {" & "}
-          <Text style={styles.footerLink}>Privacy Policy</Text>
-        </Text>
-      </ScrollView>
-    </KeyboardAvoidingView>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
+            {/* Header */}
+            <View style={styles.header}>
+              <Animated.View style={[styles.logoIconWrap, { transform: [{ scale: logoScale }] }]}>
+                <LinearGradient
+                  colors={T.accentGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={styles.logoGradient}
+                >
+                  <Feather name="user-plus" size={26} color="#1A120B" />
+                </LinearGradient>
+              </Animated.View>
+              <Text style={styles.title}>Life-OS</Text>
+              <Text style={styles.subtitle}>Create your account</Text>
+            </View>
+
+            {/* Form Card */}
+            <View style={styles.formWrap}>
+              <View style={styles.form}>
+                {renderField({
+                  field: "fullName",
+                  label: "Full Name",
+                  icon: "user",
+                  value: fullName,
+                  onChangeText: setFullName,
+                  placeholder: "Enter your full name",
+                  autoCapitalize: "words",
+                })}
+
+                {renderField({
+                  field: "username",
+                  label: "Username",
+                  icon: "at-sign",
+                  value: username,
+                  onChangeText: setUsername,
+                  placeholder: "Enter your username",
+                })}
+
+                {renderField({
+                  field: "email",
+                  label: "Email",
+                  icon: "mail",
+                  value: email,
+                  onChangeText: setEmail,
+                  placeholder: "Enter your email",
+                  keyboardType: "email-address",
+                })}
+
+                {renderField({
+                  field: "password",
+                  label: "Password",
+                  icon: "lock",
+                  value: password,
+                  onChangeText: setPassword,
+                  placeholder: "Enter your password",
+                  secure: true,
+                  secureVisible: showPassword,
+                  toggleSecure: () => setShowPassword((s) => !s),
+                })}
+
+                {/* Strength bar */}
+                {password.length > 0 && (
+                  <View style={styles.strengthContainer}>
+                    <View style={styles.strengthBarBg}>
+                      <View
+                        style={[
+                          styles.strengthBar,
+                          { width: `${strength.width}%`, backgroundColor: strength.color },
+                        ]}
+                      />
+                    </View>
+                    <Text style={[styles.strengthLabel, { color: strength.color }]}>
+                      {strength.label}
+                    </Text>
+                  </View>
+                )}
+
+                {renderField({
+                  field: "confirm",
+                  label: "Confirm Password",
+                  icon: "lock",
+                  value: confirm,
+                  onChangeText: setConfirm,
+                  placeholder: "Confirm your password",
+                  secure: true,
+                  secureVisible: showConfirm,
+                  toggleSecure: () => setShowConfirm((s) => !s),
+                })}
+
+                {/* Submit */}
+                <TouchableOpacity
+                  style={styles.buttonOuter}
+                  activeOpacity={0.85}
+                  onPress={handleSignUp}
+                  disabled={loading}
+                >
+                  <LinearGradient
+                    colors={loading ? ["#4A3A28", "#4A3A28"] : T.accentGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 0 }}
+                    style={styles.button}
+                  >
+                    {loading ? (
+                      <ActivityIndicator color="#1A120B" />
+                    ) : (
+                      <>
+                        <Text style={styles.buttonText}>Create Account</Text>
+                        <Feather name="arrow-right" size={18} color="#1A120B" />
+                      </>
+                    )}
+                  </LinearGradient>
+                </TouchableOpacity>
+              </View>
+            </View>
+
+            {/* Sign in link */}
+            <View style={styles.signupContainer}>
+              <Text style={styles.signupPrompt}>Already have an account? </Text>
+              <TouchableOpacity onPress={() => router.replace("/login")} disabled={loading} hitSlop={8}>
+                <Text style={styles.signupLink}>Sign in</Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Footer */}
+            <Text style={styles.footer}>
+              By signing up you agree to our{" "}
+              <Text style={styles.footerLink}>Terms</Text>
+              {" & "}
+              <Text style={styles.footerLink}>Privacy Policy</Text>
+            </Text>
+          </Animated.View>
+        </ScrollView>
+      </KeyboardAvoidingView>
+    </LinearGradient>
   );
 }
 
 const styles = StyleSheet.create({
-  flex:   { flex: 1, backgroundColor: "#f9fafb" },
-  scroll: { flexGrow: 1, paddingHorizontal: 24, paddingTop: 60, paddingBottom: 40 },
-
-  header:   { alignItems: "center", marginBottom: 36 },
-  title:    { fontSize: 36, fontWeight: "800", color: "#2563eb", letterSpacing: -0.5 },
-  subtitle: { fontSize: 15, color: "#6b7280", marginTop: 6 },
-
-  form: {
-    backgroundColor: "#ffffff",
-    borderRadius: 16,
+  flex: { flex: 1 },
+  gradientBackground: {
+    flex: 1,
+    overflow: "hidden",
+  },
+  blob: {
+    position: "absolute",
+    borderRadius: 999,
+    backgroundColor: T.accent,
+    opacity: 0.1,
+  },
+  blobOne: {
+    width: 260,
+    height: 260,
+    top: -70,
+    left: -80,
+  },
+  blobTwo: {
+    width: 220,
+    height: 220,
+    bottom: -60,
+    right: -80,
+    backgroundColor: "#FFB25E",
+    opacity: 0.07,
+  },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: "center",
     padding: 24,
+    paddingTop: 56,
+    paddingBottom: 40,
+  },
+  header: {
+    alignItems: "center",
+    marginBottom: 28,
+  },
+  logoIconWrap: {
+    width: 62,
+    height: 62,
+    borderRadius: 20,
+    marginBottom: 16,
     shadowColor: "#000",
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
-    shadowRadius: 8,
-    elevation: 3,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.35,
+    shadowRadius: 18,
+    elevation: 8,
   },
-
-  label:      { fontSize: 13, fontWeight: "600", color: "#374151", marginBottom: 6, marginTop: 4 },
-  input: {
+  logoGradient: {
+    width: 62,
+    height: 62,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title: {
+    fontSize: 32,
+    fontWeight: "800",
+    color: T.textPrimary,
+    letterSpacing: -0.6,
+  },
+  subtitle: {
+    fontSize: 14,
+    color: T.textSecondary,
+    marginTop: 6,
+  },
+  formWrap: {
+    width: "100%",
+  },
+  form: {
+    backgroundColor: T.surface,
+    borderRadius: 26,
     borderWidth: 1,
-    borderColor: "#e5e7eb",
-    borderRadius: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 13,
-    marginBottom: 4,
-    fontSize: 15,
-    color: "#111827",
-    backgroundColor: "#f9fafb",
+    borderColor: T.border,
+    padding: 22,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.3,
+    shadowRadius: 26,
+    elevation: 10,
   },
-  inputError:  { borderColor: "#ef4444" },
-  errorText:   { fontSize: 12, color: "#ef4444", marginBottom: 10, marginLeft: 2 },
-
-  strengthContainer: { flexDirection: "row", alignItems: "center", gap: 10, marginBottom: 12, marginTop: 4 },
-  strengthBarBg:     { flex: 1, height: 4, backgroundColor: "#e5e7eb", borderRadius: 2, overflow: "hidden" },
-  strengthBar:       { height: "100%", borderRadius: 2 },
-  strengthLabel:     { fontSize: 12, fontWeight: "600", minWidth: 40 },
-
-  button:         { backgroundColor: "#2563eb", paddingVertical: 15, borderRadius: 10, alignItems: "center", marginTop: 12 },
-  buttonDisabled: { opacity: 0.7 },
-  buttonText:     { color: "#ffffff", fontSize: 16, fontWeight: "700", letterSpacing: 0.2 },
-
-  signinContainer: { flexDirection: "row", justifyContent: "center", alignItems: "center", marginTop: 28 },
-  signinPrompt:    { fontSize: 14, color: "#6b7280" },
-  signinLink:      { fontSize: 14, color: "#2563eb", fontWeight: "600" },
-
-  footer:     { fontSize: 11, color: "#9ca3af", textAlign: "center", marginTop: 20, lineHeight: 16 },
-  footerLink: { color: "#2563eb" },
+  label: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    color: T.textSecondary,
+    marginBottom: 8,
+    marginTop: 4,
+  },
+  inputWrap: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: T.border,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    backgroundColor: T.surfaceAlt,
+  },
+  inputWrapFocused: {
+    borderColor: T.borderFocused,
+    backgroundColor: "rgba(255, 138, 61, 0.14)",
+  },
+  inputWrapError: {
+    borderColor: T.danger,
+  },
+  inputIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 8,
+  },
+  input: {
+    flex: 1,
+    paddingVertical: 13,
+    fontSize: 15,
+    color: T.textPrimary,
+  },
+  errorRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 6,
+    marginBottom: 10,
+    marginLeft: 2,
+  },
+  errorIcon: {
+    marginRight: 5,
+  },
+  errorText: {
+    fontSize: 12,
+    color: T.danger,
+    fontWeight: "600",
+  },
+  fieldSpacer: {
+    height: 16,
+  },
+  strengthContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginBottom: 14,
+    marginTop: -6,
+  },
+  strengthBarBg: {
+    flex: 1,
+    height: 5,
+    backgroundColor: "rgba(245, 245, 244, 0.12)",
+    borderRadius: 3,
+    overflow: "hidden",
+  },
+  strengthBar: {
+    height: "100%",
+    borderRadius: 3,
+  },
+  strengthLabel: {
+    fontSize: 12,
+    fontWeight: "700",
+    minWidth: 40,
+  },
+  buttonOuter: {
+    borderRadius: 18,
+    overflow: "hidden",
+    elevation: 8,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    marginTop: 8,
+  },
+  button: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 16,
+    borderRadius: 18,
+  },
+  buttonText: {
+    color: "#1A120B",
+    fontSize: 16,
+    fontWeight: "800",
+    letterSpacing: 0.2,
+    marginRight: 8,
+  },
+  signupContainer: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    marginTop: 28,
+  },
+  signupPrompt: {
+    fontSize: 14,
+    color: T.textSecondary,
+  },
+  signupLink: {
+    fontSize: 14,
+    color: T.accent,
+    fontWeight: "800",
+  },
+  footer: {
+    fontSize: 11,
+    color: T.textFaint,
+    textAlign: "center",
+    marginTop: 20,
+    lineHeight: 16,
+  },
+  footerLink: {
+    color: T.accent,
+  },
 });

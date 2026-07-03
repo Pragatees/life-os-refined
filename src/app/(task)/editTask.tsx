@@ -14,23 +14,69 @@ import {
   FlatList,
   RefreshControl,
   Modal,
+  ViewStyle,
+  TextStyle,
 } from "react-native";
 import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 
 // ── Import the shared store ──────────────────────────────────────────────────
 import { useTaskStore, Task, Priority } from "../../store/task";
 
-// ─── Theme Tokens ─────────────────────────────────────────────────────────────
-const DARK = {
-  bg: "#0F172A", surface: "#1E293B", surfaceAlt: "#263348",
-  accent: "#6366F1", success: "#10B981", warning: "#F59E0B", danger: "#EF4444",
-  textPrimary: "#F8FAFC", textSecondary: "#94A3B8", border: "#334155",
+// ─── Theme Tokens (Claymorphism — matches AddTask) ─────────────────────────
+type ThemeTokens = {
+  bg: string;
+  surface: string;
+  surfaceAlt: string;
+  accent: string;
+  accentGradient: readonly [string, string];
+  textPrimary: string;
+  textSecondary: string;
+  border: string;
+  priorityHigh: string;
+  priorityMed: string;
+  priorityLow: string;
+  success: string;
+  warning: string;
+  danger: string;
+  shadowDark: string;
 };
-const BRIGHT = {
-  bg: "#F8FAFC", surface: "#FFFFFF", surfaceAlt: "#F1F5F9",
-  accent: "#6366F1", success: "#10B981", warning: "#F59E0B", danger: "#EF4444",
-  textPrimary: "#0F172A", textSecondary: "#64748B", border: "#E2E8F0",
+
+const DARK: ThemeTokens = {
+  bg: "#0A0A0B",
+  surface: "#18181B",
+  surfaceAlt: "#212124",
+  accent: "#FF8A3D",
+  accentGradient: ["#FF8A3D", "#FFB25E"],
+  textPrimary: "#F5F5F4",
+  textSecondary: "#9B9B9F",
+  border: "#28282C",
+  priorityHigh: "#FF6B5B",
+  priorityMed: "#FFC24B",
+  priorityLow: "#3DD68C",
+  success: "#3DD68C",
+  warning: "#FFC24B",
+  danger: "#FF6B5B",
+  shadowDark: "#000000",
+};
+
+const BRIGHT: ThemeTokens = {
+  bg: "#F4F4F5",
+  surface: "#FFFFFF",
+  surfaceAlt: "#EDEDEF",
+  accent: "#FF7A2F",
+  accentGradient: ["#FF8A3D", "#FF6B1F"],
+  textPrimary: "#1C1C1E",
+  textSecondary: "#7A7A80",
+  border: "#E6E6E9",
+  priorityHigh: "#EF5A4C",
+  priorityMed: "#F0A93B",
+  priorityLow: "#22B573",
+  success: "#22B573",
+  warning: "#F0A93B",
+  danger: "#EF5A4C",
+  shadowDark: "#B9B9C0",
 };
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -42,10 +88,10 @@ export interface EditTaskProps {
   theme?: ThemeType;
 }
 
-const PRIORITY_CONFIG: Record<Priority, { label: string; colorKey: "danger" | "warning" | "success" }> = {
-  HIGH:   { label: "High",   colorKey: "danger" },
-  MEDIUM: { label: "Medium", colorKey: "warning" },
-  LOW:    { label: "Low",    colorKey: "success" },
+const PRIORITY_CONFIG: Record<Priority, { label: string; icon: keyof typeof Ionicons.glyphMap; colorKey: "priorityHigh" | "priorityMed" | "priorityLow" }> = {
+  HIGH:   { label: "High",   icon: "flame-outline",        colorKey: "priorityHigh" },
+  MEDIUM: { label: "Medium", icon: "alert-circle-outline", colorKey: "priorityMed" },
+  LOW:    { label: "Low",    icon: "leaf-outline",         colorKey: "priorityLow" },
 };
 const PRIORITY_OPTIONS: Priority[] = ["HIGH", "MEDIUM", "LOW"];
 
@@ -70,7 +116,7 @@ function parseTimeToDate(s: string): Date {
 }
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
-function Toast({ message, visible, C }: { message: string; visible: boolean; C: typeof DARK }) {
+function Toast({ message, visible, C }: { message: string; visible: boolean; C: ThemeTokens }) {
   const fadeAnim  = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(16)).current;
 
@@ -96,7 +142,7 @@ function Toast({ message, visible, C }: { message: string; visible: boolean; C: 
       pointerEvents="none"
       style={[
         ts.wrap,
-        { backgroundColor: C.surface, borderColor: C.border },
+        { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark },
         { opacity: fadeAnim, transform: [{ translateY: slideAnim }] },
       ]}
     >
@@ -105,12 +151,16 @@ function Toast({ message, visible, C }: { message: string; visible: boolean; C: 
   );
 }
 const ts = StyleSheet.create({
-  wrap: { position: "absolute", bottom: 20, left: 18, right: 18, borderWidth: 1, borderRadius: 12, paddingVertical: 13, paddingHorizontal: 16, alignItems: "center", zIndex: 99, shadowColor: "#000", shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.2, shadowRadius: 8, elevation: 6 },
-  text: { fontSize: 13, fontWeight: "600", textAlign: "center" },
+  wrap: {
+    position: "absolute", bottom: 20, left: 18, right: 18, borderWidth: 1, borderRadius: 18,
+    paddingVertical: 13, paddingHorizontal: 16, alignItems: "center", zIndex: 99,
+    shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.2, shadowRadius: 16, elevation: 6,
+  } as ViewStyle,
+  text: { fontSize: 13, fontWeight: "600", textAlign: "center" } as TextStyle,
 });
 
 // ─── Action Dropdown ──────────────────────────────────────────────────────────
-function ActionDropdown({ visible, onClose, onComplete, C }: { visible: boolean; onClose: () => void; onComplete: () => void; C: typeof DARK }) {
+function ActionDropdown({ visible, onClose, onComplete, C }: { visible: boolean; onClose: () => void; onComplete: () => void; C: ThemeTokens }) {
   const fadeAnim  = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.92)).current;
 
@@ -127,9 +177,9 @@ function ActionDropdown({ visible, onClose, onComplete, C }: { visible: boolean;
   return (
     <>
       <TouchableOpacity style={dd.backdrop} activeOpacity={1} onPress={onClose} />
-      <Animated.View style={[dd.panel, { backgroundColor: C.surface, borderColor: C.border }, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
+      <Animated.View style={[dd.panel, { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark }, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
         <TouchableOpacity style={dd.item} activeOpacity={0.75} onPress={() => { onClose(); onComplete(); }}>
-          <View style={[dd.iconWrap, { backgroundColor: C.success + "18", borderColor: C.success + "33" }]}>
+          <View style={[dd.iconWrap, { backgroundColor: `${C.success}18`, borderColor: `${C.success}33` }]}>
             <Ionicons name="checkmark-circle-outline" size={15} color={C.success} />
           </View>
           <Text style={[dd.itemText, { color: C.success }]}>Mark as Complete</Text>
@@ -139,15 +189,18 @@ function ActionDropdown({ visible, onClose, onComplete, C }: { visible: boolean;
   );
 }
 const dd = StyleSheet.create({
-  backdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 10 },
-  panel:    { position: "absolute", top: 40, right: 0, zIndex: 20, borderWidth: 1, borderRadius: 12, overflow: "hidden", minWidth: 180, shadowColor: "#000", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.25, shadowRadius: 10, elevation: 10 },
-  item:     { flexDirection: "row", alignItems: "center", gap: 10, paddingHorizontal: 13, paddingVertical: 12 },
-  iconWrap: { width: 26, height: 26, borderRadius: 7, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  itemText: { fontSize: 13, fontWeight: "700" },
+  backdrop: { position: "absolute", top: 0, left: 0, right: 0, bottom: 0, zIndex: 10 } as ViewStyle,
+  panel: {
+    position: "absolute", top: 40, right: 0, zIndex: 20, borderWidth: 1, borderRadius: 16, overflow: "hidden",
+    minWidth: 180, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.22, shadowRadius: 18, elevation: 10,
+  } as ViewStyle,
+  item: { flexDirection: "row", alignItems: "center", paddingHorizontal: 13, paddingVertical: 12 } as ViewStyle,
+  iconWrap: { width: 26, height: 26, borderRadius: 9, borderWidth: 1, alignItems: "center", justifyContent: "center", marginRight: 10 } as ViewStyle,
+  itemText: { fontSize: 13, fontWeight: "700" } as TextStyle,
 });
 
 // ─── Task Card ────────────────────────────────────────────────────────────────
-function TaskCard({ task, index, onEdit, onMarkComplete, C }: { task: Task; index: number; onEdit: (t: Task) => void; onMarkComplete: (t: Task) => void; C: typeof DARK }) {
+function TaskCard({ task, index, onEdit, onMarkComplete, C }: { task: Task; index: number; onEdit: (t: Task) => void; onMarkComplete: (t: Task) => void; C: ThemeTokens }) {
   const fadeAnim  = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(10)).current;
   const indexRef  = useRef(index);
@@ -163,26 +216,26 @@ function TaskCard({ task, index, onEdit, onMarkComplete, C }: { task: Task; inde
   const priorityColor = C[PRIORITY_CONFIG[task.priority].colorKey];
 
   return (
-    <Animated.View style={[tc.wrap, { backgroundColor: C.surface, borderColor: C.border }, task.completed && { opacity: 0.48 }, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
+    <Animated.View style={[tc.wrap, { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark }, task.completed && styles.faded, { opacity: fadeAnim, transform: [{ translateY: slideAnim }] }]}>
       {task.completed && (
-        <View style={[tc.doneBanner, { backgroundColor: C.success + "12", borderColor: C.success + "30" }]}>
+        <View style={[tc.doneBanner, { backgroundColor: `${C.success}12`, borderColor: `${C.success}30` }]}>
           <Ionicons name="checkmark-circle" size={11} color={C.success} />
           <Text style={[tc.doneText, { color: C.success }]}>Completed</Text>
         </View>
       )}
       <View style={tc.topRow}>
-        <View style={{ flex: 1 }}>
-          <Text style={[tc.name, { color: C.textPrimary }, task.completed && { textDecorationLine: "line-through", color: C.textSecondary }]} numberOfLines={2}>
+        <View style={styles.flex1}>
+          <Text style={[tc.name, { color: C.textPrimary }, task.completed && { textDecorationLine: "line-through" as const, color: C.textSecondary }]} numberOfLines={2}>
             {task.taskName}
           </Text>
           {!!task.description && (
-            <Text style={[tc.desc, { color: C.textSecondary }, task.completed && { textDecorationLine: "line-through" }]} numberOfLines={2}>
+            <Text style={[tc.desc, { color: C.textSecondary }, task.completed && styles.strikethrough]} numberOfLines={2}>
               {task.description}
             </Text>
           )}
         </View>
         {!task.completed && (
-          <View style={{ position: "relative" }}>
+          <View style={styles.relative}>
             <TouchableOpacity style={[tc.menuBtn, { backgroundColor: C.surfaceAlt, borderColor: C.border }]} activeOpacity={0.7} onPress={() => setDropdownOpen((v) => !v)}>
               <Ionicons name="ellipsis-vertical" size={15} color={C.textSecondary} />
             </TouchableOpacity>
@@ -191,12 +244,18 @@ function TaskCard({ task, index, onEdit, onMarkComplete, C }: { task: Task; inde
         )}
       </View>
       <View style={tc.metaRow}>
-        <View style={[tc.priorityBadge, { backgroundColor: priorityColor + "18", borderColor: priorityColor + "40" }]}>
-          <View style={[tc.priorityDot, { backgroundColor: priorityColor }]} />
+        <View style={[tc.priorityBadge, { backgroundColor: `${priorityColor}18`, borderColor: `${priorityColor}40` }]}>
+          <Ionicons name={PRIORITY_CONFIG[task.priority].icon} size={11} color={priorityColor} style={{ marginRight: 4 }} />
           <Text style={[tc.priorityText, { color: priorityColor }]}>{PRIORITY_CONFIG[task.priority].label}</Text>
         </View>
-        <Text style={[tc.meta, { color: C.textSecondary }]}><Ionicons name="time-outline" size={11} /> {fmtTimeDisplay(task.taskTime)}</Text>
-        <Text style={[tc.meta, { color: C.textSecondary }]}><Ionicons name="calendar-outline" size={11} /> {fmtDateDisplay(task.taskDate)}</Text>
+        <View style={styles.metaItem}>
+          <Ionicons name="time-outline" size={11} color={C.textSecondary} />
+          <Text style={[tc.meta, { color: C.textSecondary }]}> {fmtTimeDisplay(task.taskTime)}</Text>
+        </View>
+        <View style={styles.metaItem}>
+          <Ionicons name="calendar-outline" size={11} color={C.textSecondary} />
+          <Text style={[tc.meta, { color: C.textSecondary }]}> {fmtDateDisplay(task.taskDate)}</Text>
+        </View>
       </View>
       {!task.completed && (
         <TouchableOpacity style={[tc.editBtn, { borderTopColor: C.border }]} onPress={() => onEdit(task)} activeOpacity={0.75}>
@@ -208,24 +267,23 @@ function TaskCard({ task, index, onEdit, onMarkComplete, C }: { task: Task; inde
   );
 }
 const tc = StyleSheet.create({
-  wrap:          { borderWidth: 1, borderRadius: 14, padding: 13, marginBottom: 10 },
-  doneBanner:    { flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3, alignSelf: "flex-start", marginBottom: 8 },
-  doneText:      { fontSize: 10, fontWeight: "700", letterSpacing: 0.3 },
-  topRow:        { flexDirection: "row", alignItems: "flex-start", gap: 8, marginBottom: 9 },
-  name:          { fontSize: 14, fontWeight: "700", marginBottom: 3, letterSpacing: -0.1 },
-  desc:          { fontSize: 12, lineHeight: 17 },
-  menuBtn:       { width: 30, height: 30, borderRadius: 8, borderWidth: 1, alignItems: "center", justifyContent: "center" },
-  metaRow:       { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 9 },
-  priorityBadge: { flexDirection: "row", alignItems: "center", gap: 4, borderWidth: 1, borderRadius: 6, paddingHorizontal: 7, paddingVertical: 3 },
-  priorityDot:   { width: 5, height: 5, borderRadius: 3 },
-  priorityText:  { fontSize: 10, fontWeight: "700", letterSpacing: 0.3 },
-  meta:          { fontSize: 11, fontWeight: "500" },
-  editBtn:       { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, borderTopWidth: 1, paddingTop: 9 },
-  editText:      { fontSize: 12, fontWeight: "600" },
+  wrap:          { borderWidth: 1, borderRadius: 20, padding: 14, marginBottom: 12, shadowOffset: { width: 0, height: 8 }, shadowOpacity: 0.12, shadowRadius: 14, elevation: 3 } as ViewStyle,
+  doneBanner:    { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3, alignSelf: "flex-start", marginBottom: 8 } as ViewStyle,
+  doneText:      { fontSize: 10, fontWeight: "700", letterSpacing: 0.3, marginLeft: 4 } as TextStyle,
+  topRow:        { flexDirection: "row", alignItems: "flex-start", marginBottom: 9 } as ViewStyle,
+  name:          { fontSize: 14, fontWeight: "700", marginBottom: 3, letterSpacing: -0.1, marginRight: 8 } as TextStyle,
+  desc:          { fontSize: 12, lineHeight: 17, marginRight: 8 } as TextStyle,
+  menuBtn:       { width: 30, height: 30, borderRadius: 10, borderWidth: 1, alignItems: "center", justifyContent: "center" } as ViewStyle,
+  metaRow:       { flexDirection: "row", alignItems: "center", flexWrap: "wrap", marginBottom: 9 } as ViewStyle,
+  priorityBadge: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 3, marginRight: 6, marginBottom: 4 } as ViewStyle,
+  priorityText:  { fontSize: 10, fontWeight: "700", letterSpacing: 0.3 } as TextStyle,
+  meta:          { fontSize: 11, fontWeight: "500" } as TextStyle,
+  editBtn:       { flexDirection: "row", alignItems: "center", justifyContent: "center", borderTopWidth: 1, paddingTop: 9 } as ViewStyle,
+  editText:      { fontSize: 12, fontWeight: "600", marginLeft: 5 } as TextStyle,
 });
 
 // ─── Edit Sheet ───────────────────────────────────────────────────────────────
-function EditSheet({ visible, task, onClose, onSave, saving, C }: { visible: boolean; task: Task | null; onClose: () => void; onSave: (id: string, u: Omit<Task, "id" | "completed">) => void; saving: boolean; C: typeof DARK }) {
+function EditSheet({ visible, task, onClose, onSave, saving, C }: { visible: boolean; task: Task | null; onClose: () => void; onSave: (id: string, u: Omit<Task, "id" | "completed">) => void; saving: boolean; C: ThemeTokens }) {
   const [taskName,    setTaskName]    = useState("");
   const [description, setDescription] = useState("");
   const [taskDate,    setTaskDate]    = useState(new Date());
@@ -266,10 +324,10 @@ function EditSheet({ visible, task, onClose, onSave, saving, C }: { visible: boo
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
-      <View style={{ flex: 1, justifyContent: "flex-end" }}>
-        <TouchableOpacity style={{ ...StyleSheet.absoluteFill, backgroundColor: "rgba(0,0,0,0.5)" } as any} activeOpacity={1} onPress={() => !saving && onClose()} />
-        <Animated.View style={[sh.sheet, { backgroundColor: C.bg, borderColor: C.border }, { transform: [{ translateY: slideAnim }] }]}>
-          <View style={sh.handle} />
+      <View style={styles.modalRoot}>
+        <TouchableOpacity style={sh.backdrop} activeOpacity={1} onPress={() => !saving && onClose()} />
+        <Animated.View style={[sh.sheet, { backgroundColor: C.bg, borderColor: C.border, shadowColor: C.shadowDark }, { transform: [{ translateY: slideAnim }] }]}>
+          <View style={[sh.handle, { backgroundColor: C.border }]} />
           <View style={sh.header}>
             <Text style={[sh.title, { color: C.textPrimary }]}>Edit Task</Text>
             <TouchableOpacity onPress={onClose} disabled={saving} style={[sh.closeBtn, { backgroundColor: C.surfaceAlt }]}>
@@ -278,88 +336,126 @@ function EditSheet({ visible, task, onClose, onSave, saving, C }: { visible: boo
           </View>
           <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <Text style={[sh.label, { color: C.textSecondary }]}>Task Name</Text>
-            <TextInput style={[sh.input, { backgroundColor: C.surface, borderColor: C.border, color: C.textPrimary }]} value={taskName} onChangeText={(t) => setTaskName(t.slice(0, 100))} placeholder="Task name" placeholderTextColor={C.textSecondary} maxLength={100} selectionColor={C.accent} />
-            <Text style={[sh.label, { color: C.textSecondary }]}>Description <Text style={{ opacity: 0.45, fontWeight: "400", textTransform: "none" }}>optional</Text></Text>
-            <TextInput style={[sh.input, sh.textArea, { backgroundColor: C.surface, borderColor: C.border, color: C.textPrimary }]} value={description} onChangeText={setDescription} placeholder="Add details..." placeholderTextColor={C.textSecondary} multiline numberOfLines={3} textAlignVertical="top" selectionColor={C.accent} />
-            <View style={{ flexDirection: "row", gap: 8 }}>
-              <View style={{ flex: 1 }}>
+            <TextInput
+              style={[sh.input, { backgroundColor: C.surface, borderColor: C.border, color: C.textPrimary }]}
+              value={taskName}
+              onChangeText={(t) => setTaskName(t.slice(0, 100))}
+              placeholder="Task name"
+              placeholderTextColor={C.textSecondary}
+              maxLength={100}
+              selectionColor={C.accent}
+              cursorColor={C.accent}
+            />
+            <Text style={[sh.label, { color: C.textSecondary }]}>
+              Description <Text style={styles.optionalLabel}>optional</Text>
+            </Text>
+            <TextInput
+              style={[sh.input, sh.textArea, { backgroundColor: C.surface, borderColor: C.border, color: C.textPrimary }]}
+              value={description}
+              onChangeText={setDescription}
+              placeholder="Add details..."
+              placeholderTextColor={C.textSecondary}
+              multiline
+              numberOfLines={3}
+              textAlignVertical="top"
+              selectionColor={C.accent}
+              cursorColor={C.accent}
+            />
+            <View style={styles.row}>
+              <View style={styles.flex1}>
                 <Text style={[sh.label, { color: C.textSecondary }]}>Date</Text>
-                <TouchableOpacity style={[sh.pickerBtn, { backgroundColor: C.surface, borderColor: C.border }]} onPress={() => setPickerMode("date")}>
-                  <Ionicons name="calendar-outline" size={14} color={C.accent} />
+                <TouchableOpacity style={[sh.pickerBtn, styles.rowItemSpacer, { backgroundColor: C.surface, borderColor: C.border }]} onPress={() => setPickerMode("date")}>
+                  <Ionicons name="calendar-outline" size={14} color={C.accent} style={styles.iconSpacer} />
                   <Text style={[sh.pickerText, { color: C.textPrimary }]} numberOfLines={1}>{fmtDateDisplay(fmtDateDB(taskDate))}</Text>
                 </TouchableOpacity>
               </View>
-              <View style={{ flex: 1 }}>
+              <View style={styles.flex1}>
                 <Text style={[sh.label, { color: C.textSecondary }]}>Time</Text>
                 <TouchableOpacity style={[sh.pickerBtn, { backgroundColor: C.surface, borderColor: C.border }]} onPress={() => setPickerMode("time")}>
-                  <Ionicons name="time-outline" size={14} color={C.accent} />
+                  <Ionicons name="time-outline" size={14} color={C.accent} style={styles.iconSpacer} />
                   <Text style={[sh.pickerText, { color: C.textPrimary }]}>{fmtTimeDisplay(fmtTimeDB(taskTime))}</Text>
                 </TouchableOpacity>
               </View>
             </View>
             <Text style={[sh.label, { color: C.textSecondary }]}>Priority</Text>
-            <View style={{ flexDirection: "row", gap: 8, marginBottom: 16 }}>
-              {PRIORITY_OPTIONS.map((p) => {
+            <View style={[styles.row, styles.priorityRow]}>
+              {PRIORITY_OPTIONS.map((p, idx) => {
                 const color  = C[PRIORITY_CONFIG[p].colorKey];
                 const active = priority === p;
                 return (
-                  <TouchableOpacity key={p} onPress={() => setPriority(p)} activeOpacity={0.8} style={[sh.chip, { borderColor: active ? color : C.border, backgroundColor: active ? color + "18" : C.surfaceAlt, flex: 1 }]}>
-                    <View style={[sh.chipDot, { backgroundColor: color }]} />
+                  <TouchableOpacity
+                    key={p}
+                    onPress={() => setPriority(p)}
+                    activeOpacity={0.8}
+                    style={[
+                      sh.chip,
+                      idx !== PRIORITY_OPTIONS.length - 1 && styles.rowItemSpacer,
+                      { borderColor: active ? color : C.border, backgroundColor: active ? `${color}18` : C.surfaceAlt, flex: 1 },
+                    ]}
+                  >
+                    <Ionicons name={PRIORITY_CONFIG[p].icon} size={13} color={active ? color : C.textSecondary} style={{ marginRight: 6 }} />
                     <Text style={{ fontSize: 12, color: active ? color : C.textSecondary, fontWeight: active ? "700" : "500" }}>{PRIORITY_CONFIG[p].label}</Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
           </ScrollView>
-          <TouchableOpacity style={[sh.saveBtn, { backgroundColor: C.accent }, saving && { opacity: 0.6 }]} onPress={handleSave} disabled={saving} activeOpacity={0.85}>
-            {saving
-              ? <ActivityIndicator color="#FFF" size="small" />
-              : (<><Ionicons name="checkmark-circle-outline" size={15} color="#FFF" /><Text style={sh.saveBtnText}>Save Changes</Text></>)
-            }
+          <TouchableOpacity onPress={handleSave} disabled={saving} activeOpacity={0.85} style={saving ? styles.btnDisabled : undefined}>
+            <LinearGradient colors={C.accentGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={sh.saveBtn}>
+              {saving
+                ? <ActivityIndicator color="#FFF" size="small" />
+                : (<><Ionicons name="checkmark-circle-outline" size={15} color="#FFF" style={styles.iconSpacer} /><Text style={sh.saveBtnText}>Save Changes</Text></>)
+              }
+            </LinearGradient>
           </TouchableOpacity>
         </Animated.View>
         {pickerMode !== null && (
-          <DateTimePicker value={pickerMode === "date" ? taskDate : taskTime} mode={pickerMode} display={pickerMode === "date" ? (Platform.OS === "ios" ? "inline" : "calendar") : (Platform.OS === "ios" ? "spinner" : "clock")} is24Hour={false} onChange={onPickerChange} />
+          <DateTimePicker
+            value={pickerMode === "date" ? taskDate : taskTime}
+            mode={pickerMode}
+            display={pickerMode === "date" ? (Platform.OS === "ios" ? "inline" : "calendar") : (Platform.OS === "ios" ? "spinner" : "clock")}
+            is24Hour={false}
+            onChange={onPickerChange}
+          />
         )}
       </View>
     </Modal>
   );
 }
 const sh = StyleSheet.create({
-  sheet:      { borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, paddingHorizontal: 18, paddingTop: 12, paddingBottom: Platform.OS === "ios" ? 34 : 20, maxHeight: "88%" },
-  handle:     { width: 34, height: 4, borderRadius: 2, backgroundColor: "#334155", alignSelf: "center", marginBottom: 14 },
-  header:     { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 },
-  title:      { fontSize: 15, fontWeight: "800", letterSpacing: -0.2 },
-  closeBtn:   { width: 28, height: 28, borderRadius: 7, alignItems: "center", justifyContent: "center" },
-  label:      { fontSize: 10, fontWeight: "700", letterSpacing: 1.1, textTransform: "uppercase", marginBottom: 6 },
-  input:      { borderWidth: 1, borderRadius: 11, paddingHorizontal: 13, paddingVertical: 12, fontSize: 14, marginBottom: 14 },
-  textArea:   { minHeight: 70 },
-  pickerBtn:  { flexDirection: "row", alignItems: "center", gap: 7, borderWidth: 1, borderRadius: 11, paddingHorizontal: 11, paddingVertical: 11, marginBottom: 14 },
-  pickerText: { fontSize: 12, fontWeight: "600", flexShrink: 1 },
-  chip:       { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 5, borderWidth: 1, borderRadius: 10, paddingVertical: 10 },
-  chipDot:    { width: 5, height: 5, borderRadius: 3 },
-  saveBtn:    { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, paddingVertical: 14, borderRadius: 13, marginTop: 4 },
-  saveBtnText:{ color: "#FFF", fontSize: 14, fontWeight: "700", letterSpacing: 0.3 },
+  backdrop:   { ...StyleSheet.absoluteFill, backgroundColor: "rgba(0,0,0,0.5)" } as ViewStyle,
+  sheet:      { borderTopLeftRadius: 26, borderTopRightRadius: 26, borderWidth: 1, paddingHorizontal: 18, paddingTop: 12, paddingBottom: Platform.OS === "ios" ? 34 : 20, maxHeight: "88%", shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.18, shadowRadius: 20, elevation: 10 } as ViewStyle,
+  handle:     { width: 34, height: 4, borderRadius: 2, alignSelf: "center", marginBottom: 14 } as ViewStyle,
+  header:     { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 } as ViewStyle,
+  title:      { fontSize: 15, fontWeight: "800", letterSpacing: -0.2 } as TextStyle,
+  closeBtn:   { width: 28, height: 28, borderRadius: 9, alignItems: "center", justifyContent: "center" } as ViewStyle,
+  label:      { fontSize: 10, fontWeight: "700", letterSpacing: 1.1, textTransform: "uppercase", marginBottom: 6 } as TextStyle,
+  input:      { borderWidth: 1, borderRadius: 16, paddingHorizontal: 13, paddingVertical: 12, fontSize: 14, marginBottom: 14 } as TextStyle,
+  textArea:   { minHeight: 70 } as TextStyle,
+  pickerBtn:  { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 16, paddingHorizontal: 11, paddingVertical: 11, marginBottom: 14 } as ViewStyle,
+  pickerText: { fontSize: 12, fontWeight: "600", flexShrink: 1 } as TextStyle,
+  chip:       { flexDirection: "row", alignItems: "center", justifyContent: "center", borderWidth: 1, borderRadius: 14, paddingVertical: 10 } as ViewStyle,
+  saveBtn:    { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 15, borderRadius: 18, marginTop: 4 } as ViewStyle,
+  saveBtnText:{ color: "#FFF", fontSize: 14, fontWeight: "700", letterSpacing: 0.3, marginLeft: 6 } as TextStyle,
 });
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function EditTaskComponent({ onTaskChanged, theme = "dark" }: EditTaskProps) {
-  const C = theme === "bright" ? BRIGHT : DARK;
+  const C: ThemeTokens = theme === "bright" ? BRIGHT : DARK;
 
   // ── Read from the shared store ────────────────────────────────────────────
-  const tasks       = useTaskStore((s: any) => s.tasks);
-  const loading     = useTaskStore((s: any) => s.loading);
-  const fetchTasks  = useTaskStore((s: any) => s.fetchTasks);
-  const invalidate  = useTaskStore((s: any) => s.invalidate);
-  const markComplete = useTaskStore((s: any) => s.markComplete);
-  const updateTask  = useTaskStore((s: any) => s.updateTask);
+  const tasks         = useTaskStore((s: any) => s.tasks);
+  const loading       = useTaskStore((s: any) => s.loading);
+  const fetchTasks    = useTaskStore((s: any) => s.fetchTasks);
+  const markComplete  = useTaskStore((s: any) => s.markComplete);
+  const updateTask    = useTaskStore((s: any) => s.updateTask);
 
-  const [refreshing,  setRefreshing]  = useState(false);
-  const [editingTask, setEditingTask] = useState<Task | null>(null);
-  const [editVisible, setEditVisible] = useState(false);
-  const [saving,      setSaving]      = useState(false);
-  const [toastMsg,    setToastMsg]    = useState("");
-  const [toastVisible,setToastVisible]= useState(false);
+  const [refreshing,   setRefreshing]   = useState(false);
+  const [editingTask,  setEditingTask]  = useState<Task | null>(null);
+  const [editVisible,  setEditVisible]  = useState(false);
+  const [saving,       setSaving]       = useState(false);
+  const [toastMsg,     setToastMsg]     = useState("");
+  const [toastVisible, setToastVisible] = useState(false);
 
   // Fetch once on mount — store's cache guard prevents duplicate calls
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
@@ -417,39 +513,39 @@ export default function EditTaskComponent({ onTaskChanged, theme = "dark" }: Edi
 
   if (loading && tasks.length === 0) {
     return (
-      <View style={{ flex: 1, backgroundColor: C.bg, alignItems: "center", justifyContent: "center" }}>
+      <View style={[styles.center, { backgroundColor: C.bg }]}>
         <ActivityIndicator color={C.accent} size="large" />
       </View>
     );
   }
 
   return (
-    <View style={{ flex: 1, backgroundColor: C.bg }}>
+    <View style={[styles.screen, { backgroundColor: C.bg }]}>
       {/* Header */}
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 18, paddingTop: 16, paddingBottom: 10 }}>
-        <View style={{ width: 32, height: 32, borderRadius: 9, backgroundColor: C.accent + "18", borderWidth: 1, borderColor: C.accent + "33", alignItems: "center", justifyContent: "center" }}>
+      <View style={styles.headerRow}>
+        <View style={[styles.headerIconWrap, { backgroundColor: C.surfaceAlt, borderColor: C.border }]}>
           <Ionicons name="create-outline" size={15} color={C.accent} />
         </View>
         <View>
-          <Text style={{ fontSize: 14, fontWeight: "700", color: C.textPrimary, letterSpacing: -0.2 }}>Manage Tasks</Text>
-          <Text style={{ fontSize: 11, color: C.textSecondary }}>Edit or complete today's tasks</Text>
+          <Text style={[styles.headerTitle, { color: C.textPrimary }]}>Manage Tasks</Text>
+          <Text style={[styles.headerSubtitle, { color: C.textSecondary }]}>Edit or complete today's tasks</Text>
         </View>
       </View>
 
       <FlatList
         data={tasks}
-        keyExtractor={(item) => item.id}
+        keyExtractor={(item: Task) => item.id}
         renderItem={({ item, index }) => (
           <TaskCard task={item} index={index} onEdit={openEdit} onMarkComplete={handleMarkComplete} C={C} />
         )}
-        contentContainerStyle={{ paddingHorizontal: 18, paddingBottom: 36, flexGrow: 1 }}
+        contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} tintColor={C.accent} colors={[C.accent]} />}
         ListEmptyComponent={
-          <View style={{ alignItems: "center", paddingVertical: 48 }}>
-            <Ionicons name="checkmark-done-circle-outline" size={26} color={C.accent} style={{ marginBottom: 12 }} />
-            <Text style={{ fontSize: 14, fontWeight: "700", color: C.textPrimary, marginBottom: 4 }}>No tasks today.</Text>
-            <Text style={{ fontSize: 12, color: C.textSecondary }}>Plan something meaningful.</Text>
+          <View style={styles.emptyWrap}>
+            <Ionicons name="checkmark-done-circle-outline" size={26} color={C.accent} style={styles.emptyIcon} />
+            <Text style={[styles.emptyTitle, { color: C.textPrimary }]}>No tasks today.</Text>
+            <Text style={[styles.emptySubtitle, { color: C.textSecondary }]}>Plan something meaningful.</Text>
           </View>
         }
       />
@@ -459,3 +555,29 @@ export default function EditTaskComponent({ onTaskChanged, theme = "dark" }: Edi
     </View>
   );
 }
+
+const styles = StyleSheet.create({
+  screen: { flex: 1 } as ViewStyle,
+  center: { flex: 1, alignItems: "center", justifyContent: "center" } as ViewStyle,
+  flex1: { flex: 1 } as ViewStyle,
+  relative: { position: "relative" } as ViewStyle,
+  faded: { opacity: 0.48 } as ViewStyle,
+  strikethrough: { textDecorationLine: "line-through" } as TextStyle,
+  optionalLabel: { opacity: 0.45, fontWeight: "400", textTransform: "none" } as TextStyle,
+  row: { flexDirection: "row" } as ViewStyle,
+  rowItemSpacer: { marginRight: 8 } as ViewStyle,
+  priorityRow: { marginBottom: 16 } as ViewStyle,
+  iconSpacer: { marginRight: 6 } as TextStyle,
+  btnDisabled: { opacity: 0.6 } as ViewStyle,
+  metaItem: { flexDirection: "row", alignItems: "center", marginRight: 6, marginBottom: 4 } as ViewStyle,
+  modalRoot: { flex: 1, justifyContent: "flex-end" } as ViewStyle,
+  headerRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 18, paddingTop: 16, paddingBottom: 10, gap: 10 } as ViewStyle,
+  headerIconWrap: { width: 34, height: 34, borderRadius: 11, borderWidth: 1, alignItems: "center", justifyContent: "center" } as ViewStyle,
+  headerTitle: { fontSize: 16, fontWeight: "800", letterSpacing: -0.2 } as TextStyle,
+  headerSubtitle: { fontSize: 11, marginTop: 1 } as TextStyle,
+  listContent: { paddingHorizontal: 18, paddingBottom: 36, flexGrow: 1 } as ViewStyle,
+  emptyWrap: { alignItems: "center", paddingVertical: 48 } as ViewStyle,
+  emptyIcon: { marginBottom: 12 } as TextStyle,
+  emptyTitle: { fontSize: 14, fontWeight: "700", marginBottom: 4 } as TextStyle,
+  emptySubtitle: { fontSize: 12 } as TextStyle,
+});

@@ -7,10 +7,37 @@ import {
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { LinearGradient } from "expo-linear-gradient";
 
+// ─── Theme Tokens (Claymorphism — same language as the rest of the app) ────
+// Dark = near-black with warm amber/orange accent.
+// Bright = white / soft grey, same warm accent for consistency.
+// No blue, purple, violet, or pink anywhere in the palette.
 const THEMES = {
-  dark:   { sheet: "#1E293B", inputBg: "#0F172A", accent: "#6366F1", textPrimary: "#F8FAFC", textSecondary: "#94A3B8", border: "#334155", overlay: "rgba(0,0,0,0.6)" },
-  bright: { sheet: "#FFFFFF", inputBg: "#F1F5F9", accent: "#6366F1", textPrimary: "#0F172A", textSecondary: "#64748B", border: "#E2E8F0", overlay: "rgba(0,0,0,0.3)" },
+  dark: {
+    sheet: "#18181B",
+    surfaceAlt: "#212124",
+    inputBg: "#212124",
+    accent: "#FF8A3D",
+    accentGradient: ["#FF8A3D", "#FFB25E"] as const,
+    textPrimary: "#F5F5F4",
+    textSecondary: "#9B9B9F",
+    border: "#28282C",
+    overlay: "rgba(0,0,0,0.65)",
+    shadowDark: "#000000",
+  },
+  bright: {
+    sheet: "#FFFFFF",
+    surfaceAlt: "#EDEDEF",
+    inputBg: "#F4F4F5",
+    accent: "#FF7A2F",
+    accentGradient: ["#FF8A3D", "#FF6B1F"] as const,
+    textPrimary: "#1C1C1E",
+    textSecondary: "#7A7A80",
+    border: "#E6E6E9",
+    overlay: "rgba(20,15,10,0.4)",
+    shadowDark: "#B9B9C0",
+  },
 };
 
 export default function ChangeEmailModal({ visible, onClose, theme }: { visible: boolean; onClose: () => void; theme: "dark" | "bright" }) {
@@ -126,20 +153,33 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
         <Animated.View
           style={[
             styles.popup,
-            { backgroundColor: C.sheet, opacity: opacityAnim, transform: [{ scale: scaleAnim }] },
+            {
+              backgroundColor: C.sheet,
+              borderColor: C.border,
+              shadowColor: C.shadowDark,
+              opacity: opacityAnim,
+              transform: [{ scale: scaleAnim }],
+            },
           ]}
         >
           {/* Title row */}
           <View style={styles.titleRow}>
-            <Text style={[styles.title, { color: C.textPrimary }]}>
-              {step === "password" ? "Verify Identity" : "Change Email"}
-            </Text>
-            <TouchableOpacity onPress={dismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Ionicons name="close" size={22} color={C.textSecondary} />
+            <View style={styles.titleLeft}>
+              <View style={[styles.titleIconWrap, { backgroundColor: C.accent + "1E", borderColor: C.accent + "35" }]}>
+                <Ionicons name={step === "password" ? "shield-checkmark-outline" : "mail-outline"} size={16} color={C.accent} />
+              </View>
+              <Text style={[styles.title, { color: C.textPrimary }]}>
+                {step === "password" ? "Verify Identity" : "Change Email"}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={dismiss}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={[styles.closeBtn, { backgroundColor: C.surfaceAlt }]}
+            >
+              <Ionicons name="close" size={17} color={C.textSecondary} />
             </TouchableOpacity>
           </View>
-
-          <View style={[styles.divider, { backgroundColor: C.border }]} />
 
           {step === "password" ? (
             <>
@@ -155,41 +195,66 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
                   autoCapitalize="none"
                   autoCorrect={false}
                   autoFocus
+                  selectionColor={C.accent}
+                  cursorColor={C.accent}
                 />
-                <TouchableOpacity onPress={() => setPwVisible(v => !v)} style={styles.eyeBtn}>
-                  <Ionicons name={pwVisible ? "eye-off-outline" : "eye-outline"} size={20} color={C.textSecondary} />
+                <TouchableOpacity onPress={() => setPwVisible(v => !v)} style={styles.eyeBtn} hitSlop={8}>
+                  <Ionicons name={pwVisible ? "eye-off-outline" : "eye-outline"} size={18} color={C.textSecondary} />
                 </TouchableOpacity>
               </View>
               <TouchableOpacity
-                style={[styles.btn, { backgroundColor: C.accent, opacity: loading ? 0.7 : 1 }]}
                 onPress={handleVerifyPassword}
                 disabled={loading}
                 activeOpacity={0.85}
+                style={loading ? styles.btnDisabled : undefined}
               >
-                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Verify →</Text>}
+                <LinearGradient
+                  colors={C.accentGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.btn}
+                >
+                  {loading ? <ActivityIndicator color="#1A120B" /> : (
+                    <>
+                      <Text style={styles.btnText}>Verify</Text>
+                      <Ionicons name="arrow-forward" size={16} color="#1A120B" />
+                    </>
+                  )}
+                </LinearGradient>
               </TouchableOpacity>
             </>
           ) : (
             <>
               <Text style={[styles.label, { color: C.textSecondary }]}>New Email</Text>
-              <TextInput
-                style={[styles.inputStandalone, { backgroundColor: C.inputBg, borderColor: C.border, color: C.textPrimary }]}
-                placeholder="Enter new email"
-                placeholderTextColor={C.textSecondary}
-                value={email}
-                onChangeText={setEmail}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoFocus
-              />
+              <View style={[styles.inputWrapper, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+                <TextInput
+                  style={[styles.inputInner, { color: C.textPrimary }]}
+                  placeholder="Enter new email"
+                  placeholderTextColor={C.textSecondary}
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoFocus
+                  selectionColor={C.accent}
+                  cursorColor={C.accent}
+                />
+              </View>
               <TouchableOpacity
-                style={[styles.btn, { backgroundColor: C.accent, opacity: loading ? 0.7 : 1 }]}
                 onPress={handleUpdateEmail}
                 disabled={loading}
                 activeOpacity={0.85}
+                style={loading ? styles.btnDisabled : undefined}
               >
-                {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Save</Text>}
+                <LinearGradient
+                  colors={C.accentGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.btn}
+                >
+                  {loading ? <ActivityIndicator color="#1A120B" /> : <Text style={styles.btnText}>Save</Text>}
+                </LinearGradient>
               </TouchableOpacity>
             </>
           )}
@@ -212,29 +277,44 @@ const styles = StyleSheet.create({
   popup: {
     width: "100%",
     maxWidth: 420,
-    borderRadius: 20,
+    borderRadius: 26,
+    borderWidth: 1,
     paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 24,
+    paddingTop: 18,
+    paddingBottom: 22,
     elevation: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.3,
+    shadowRadius: 26,
   },
   titleRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "center",
-    marginBottom: 16,
+    marginBottom: 18,
   },
-  title:           { fontSize: 17, fontWeight: "700" },
-  divider:         { height: 1, marginBottom: 4 },
-  label:           { fontSize: 12, fontWeight: "600", marginBottom: 6, marginTop: 14 },
-  inputWrapper:    { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, minHeight: 48 },
+  titleLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
+  titleIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  closeBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title:           { fontSize: 15, fontWeight: "800", letterSpacing: -0.2 },
+  label:           { fontSize: 10, fontWeight: "700", letterSpacing: 0.7, textTransform: "uppercase", marginBottom: 8, marginTop: 4 },
+  inputWrapper:    { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 16, paddingHorizontal: 14, minHeight: 50 },
   inputInner:      { flex: 1, paddingVertical: 12, fontSize: 15 },
-  inputStandalone: { borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, minHeight: 48 },
   eyeBtn:          { paddingLeft: 8 },
-  btn:             { borderRadius: 10, paddingVertical: 14, alignItems: "center", marginTop: 24 },
-  btnText:         { color: "#fff", fontSize: 15, fontWeight: "700" },
+  btn:             { flexDirection: "row", gap: 8, borderRadius: 16, paddingVertical: 15, alignItems: "center", justifyContent: "center", marginTop: 22 },
+  btnDisabled:     { opacity: 0.7 },
+  btnText:         { color: "#1A120B", fontSize: 14, fontWeight: "800" },
 });

@@ -1,25 +1,26 @@
 {
   "expo": {
-    "name": "life-os",
+    "name": "Life-OS",
     "slug": "life-os",
     "version": "1.0.0",
     "orientation": "portrait",
-    "icon": "./assets/images/icon.png",
+
+    "icon": "./assets/images/All_in_all_logo.png",
+
     "scheme": "lifeos",
     "userInterfaceStyle": "automatic",
 
     "ios": {
-      "icon": "./assets/images/icon.png"
+      "icon": "./assets/images/All_in_all_logo.png"
     },
 
     "android": {
       "package": "com.pragateesh7.lifeos",
       "predictiveBackGestureEnabled": false,
+
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "backgroundColor": "#E6F4FE",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "foregroundImage": "./assets/images/All_in_all_logo.png",
+        "backgroundColor": "#FFFFFF"
       },
 
       "permissions": [
@@ -30,7 +31,7 @@
 
     "web": {
       "output": "static",
-      "favicon": "./assets/images/favicon.png"
+      "favicon": "./assets/images/All_in_all_logo.png"
     },
 
     "plugins": [
@@ -39,19 +40,17 @@
       [
         "expo-splash-screen",
         {
-          "backgroundColor": "#208AEF",
-          "android": {
-            "image": "./assets/images/splash-icon.png",
-            "imageWidth": 76
-          }
+          "backgroundColor": "#FFFFFF",
+          "image": "./assets/images/All_in_all_logo.png",
+          "imageWidth": 220
         }
       ],
 
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/icon.png",
-          "color": "#208AEF",
+          "icon": "./assets/images/All_in_all_logo.png",
+          "color": "#F97316",
           "defaultChannel": "default"
         }
       ],

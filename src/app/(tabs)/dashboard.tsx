@@ -1,3 +1,4 @@
+// app/(dashboard)/index.tsx
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View,
@@ -13,29 +14,49 @@ import {
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
+import { LinearGradient } from "expo-linear-gradient";
 
 import AddTask from "../(task)/addTask";
 import ProgressTask from "../(task)/progressTask";
 import EditTask from "../(task)/editTask";
 import Sidebar from "../(tabs)/sidebar";
 
-// ─── Theme Tokens ─────────────────────────────────────────────────────────────
+// ─── Theme Tokens (Claymorphism) ───────────────────────────────────────────
+// Dark = near-black with warm amber/orange + green accents.
+// Bright = white / soft grey, same warm accent for consistency.
+// No blue, purple, violet, or pink anywhere in the palette.
 const DARK = {
-  bg: "#0F172A",
-  surface: "#1E293B",
-  accent: "#6366F1",
-  textPrimary: "#F8FAFC",
-  textSecondary: "#94A3B8",
-  border: "#334155",
+  bg: "#0A0A0B",
+  surface: "#18181B",
+  surfaceAlt: "#212124",
+  accent: "#FF8A3D",
+  accentSoft: "#3A2617",
+  accentGradient: ["#FF8A3D", "#FFB25E"] as const,
+  success: "#3DD68C",
+  warning: "#FFC24B",
+  danger: "#FF6B5B",
+  textPrimary: "#F5F5F4",
+  textSecondary: "#9B9B9F",
+  border: "#28282C",
+  shadowDark: "#000000",
+  shadowLight: "#2C2C30",
 };
 
 const BRIGHT = {
-  bg: "#F8FAFC",
+  bg: "#F4F4F5",
   surface: "#FFFFFF",
-  accent: "#6366F1",
-  textPrimary: "#0F172A",
-  textSecondary: "#64748B",
-  border: "#E2E8F0",
+  surfaceAlt: "#EDEDEF",
+  accent: "#FF7A2F",
+  accentSoft: "#FFE4CE",
+  accentGradient: ["#FF8A3D", "#FF6B1F"] as const,
+  success: "#22B573",
+  warning: "#F0A93B",
+  danger: "#EF5A4C",
+  textPrimary: "#1C1C1E",
+  textSecondary: "#7A7A80",
+  border: "#E6E6E9",
+  shadowDark: "#B9B9C0",
+  shadowLight: "#FFFFFF",
 };
 
 type Theme = "bright" | "dark";
@@ -47,8 +68,8 @@ const TABS: {
   icon: keyof typeof Ionicons.glyphMap;
   activeIcon: keyof typeof Ionicons.glyphMap;
 }[] = [
-  { id: "tasks",    label: "Tasks",    icon: "list-outline",        activeIcon: "list" },
-  { id: "add",      label: "Add",      icon: "add-circle-outline",  activeIcon: "add-circle" },
+  { id: "tasks", label: "Tasks", icon: "list-outline", activeIcon: "list" },
+  { id: "add", label: "Add", icon: "add-circle-outline", activeIcon: "add-circle" },
   { id: "progress", label: "Progress", icon: "stats-chart-outline", activeIcon: "stats-chart" },
 ];
 
@@ -56,40 +77,62 @@ const getSidebarWidth = () => Math.min(300, Dimensions.get("window").width * 0.8
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 export default function Dashboard() {
-  const [theme, setTheme]               = useState<Theme>("dark");
-  const [themeLoaded, setThemeLoaded]   = useState(false);
-  const [activeTab, setActiveTab]       = useState<Tab>("tasks");
+  const [theme, setTheme] = useState<Theme>("dark");
+  const [themeLoaded, setThemeLoaded] = useState(false);
+  const [activeTab, setActiveTab] = useState<Tab>("tasks");
   const [refreshTrigger, setRefreshTrigger] = useState(0);
-  const [sidebarOpen, setSidebarOpen]   = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
   const [sidebarMounted, setSidebarMounted] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(getSidebarWidth());
-  const [fullName, setFullName]         = useState("");
-  const [username, setUsername]         = useState("");
+  const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
 
   // ── Sidebar slide + backdrop animation values ─────────────────────────────
   const translateX = useRef(new Animated.Value(-getSidebarWidth())).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
 
+  // ── Header entrance animation ──────────────────────────────────────────────
+  const headerFade = useRef(new Animated.Value(0)).current;
+  const headerSlide = useRef(new Animated.Value(-8)).current;
+
   // ── Keep sidebar width in sync with orientation / window changes ──────────
   useEffect(() => {
-    const sub = Dimensions.addEventListener("change", () => {
+    const subscription = Dimensions.addEventListener("change", () => {
       const w = getSidebarWidth();
       setSidebarWidth(w);
       if (!sidebarOpen) translateX.setValue(-w);
     });
-    return () => sub.remove();
+    return () => subscription.remove();
   }, [sidebarOpen]);
 
   // ── Load data from storage on mount ───────────────────────────────────────
   useEffect(() => {
-    AsyncStorage.multiGet(["theme", "fullName", "username"]).then((pairs) => {
-      const map = Object.fromEntries(pairs.map(([k, v]) => [k, v ?? ""]));
-      if (map.theme === "bright" || map.theme === "dark") setTheme(map.theme as Theme);
-      setFullName(map.fullName);
-      setUsername(map.username);
-      setThemeLoaded(true);
-    });
+    const loadData = async () => {
+      try {
+        const pairs = await AsyncStorage.multiGet(["theme", "fullName", "username"]);
+        const map = Object.fromEntries(pairs.map(([k, v]) => [k, v ?? ""]));
+        if (map.theme === "bright" || map.theme === "dark") {
+          setTheme(map.theme as Theme);
+        }
+        setFullName(map.fullName);
+        setUsername(map.username);
+      } catch (error) {
+        console.error("Error loading data:", error);
+      } finally {
+        setThemeLoaded(true);
+      }
+    };
+    loadData();
   }, []);
+
+  useEffect(() => {
+    if (themeLoaded) {
+      Animated.parallel([
+        Animated.timing(headerFade, { toValue: 1, duration: 380, useNativeDriver: true }),
+        Animated.timing(headerSlide, { toValue: 0, duration: 380, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [themeLoaded, headerFade, headerSlide]);
 
   // ── Drive the slide animation purely from sidebarOpen ─────────────────────
   useEffect(() => {
@@ -98,12 +141,12 @@ export default function Dashboard() {
       Animated.parallel([
         Animated.timing(translateX, {
           toValue: 0,
-          duration: 260,
+          duration: 280,
           useNativeDriver: true,
         }),
         Animated.timing(backdropOpacity, {
           toValue: 1,
-          duration: 260,
+          duration: 280,
           useNativeDriver: true,
         }),
       ]).start();
@@ -120,9 +163,6 @@ export default function Dashboard() {
           useNativeDriver: true,
         }),
       ]).start(({ finished }) => {
-        // IMPORTANT: only unmount if this close animation actually completed.
-        // If it was interrupted by a fast reopen, `finished` is false and we
-        // must NOT unmount the panel that's now animating back open.
         if (finished) setSidebarMounted(false);
       });
     }
@@ -132,7 +172,11 @@ export default function Dashboard() {
   const toggleTheme = useCallback(async (value: boolean) => {
     const next: Theme = value ? "dark" : "bright";
     setTheme(next);
-    await AsyncStorage.setItem("theme", next);
+    try {
+      await AsyncStorage.setItem("theme", next);
+    } catch (error) {
+      console.error("Error saving theme:", error);
+    }
   }, []);
 
   const handleTaskChanged = useCallback(() => setRefreshTrigger((n) => n + 1), []);
@@ -140,92 +184,138 @@ export default function Dashboard() {
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   const C = theme === "bright" ? BRIGHT : DARK;
+  const displayName = (fullName || username || "").trim();
 
   if (!themeLoaded) {
     return (
-      <View style={{ flex: 1, backgroundColor: "#0F172A", alignItems: "center", justifyContent: "center" }}>
-        <ActivityIndicator color="#6366F1" />
+      <View style={[styles.loadingContainer, { backgroundColor: DARK.bg }]}>
+        <View style={[styles.loadingClay, { backgroundColor: DARK.surface, shadowColor: DARK.shadowDark }]}>
+          <ActivityIndicator size="large" color={DARK.accent} />
+        </View>
       </View>
     );
   }
 
   return (
-    <View style={[styles.root, { backgroundColor: C.bg, paddingTop: Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 50 }]}>
+    <View
+      style={[
+        styles.root,
+        { backgroundColor: C.bg, paddingTop: Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 50 },
+      ]}
+    >
       <StatusBar
         barStyle={theme === "bright" ? "dark-content" : "light-content"}
         backgroundColor={C.bg}
       />
 
       {/* ── Header ── */}
-      <View style={[styles.header, { borderBottomColor: C.border }]}>
+      <Animated.View
+        style={[
+          styles.headerCard,
+          {
+            backgroundColor: C.surface,
+            borderColor: C.border,
+            shadowColor: C.shadowDark,
+            opacity: headerFade,
+            transform: [{ translateY: headerSlide }],
+          },
+        ]}
+      >
         <TouchableOpacity
           onPress={openSidebar}
           activeOpacity={0.75}
           hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          style={[styles.iconBtn, { backgroundColor: C.surfaceAlt, borderColor: C.border }]}
         >
-          <Ionicons name="menu-outline" size={24} color={C.textPrimary} />
+          <Ionicons name="menu-outline" size={20} color={C.textPrimary} />
         </TouchableOpacity>
 
-        <View style={{ alignItems: "center" }}>
+        <View style={styles.headerCenter}>
+          <Text style={[styles.eyebrow, { color: C.accent }]}>
+            {displayName ? `Hi, ${displayName.split(" ")[0]}` : "Welcome back"}
+          </Text>
           <Text style={[styles.appName, { color: C.textPrimary }]}>Life OS</Text>
           <Text style={[styles.date, { color: C.textSecondary }]}>
-            {new Date().toLocaleDateString("en-IN", { weekday: "long", day: "numeric", month: "long" })}
+            {new Date().toLocaleDateString("en-IN", {
+              weekday: "long",
+              day: "numeric",
+              month: "long",
+            })}
           </Text>
         </View>
 
         <TouchableOpacity
           onPress={() => toggleTheme(theme === "bright")}
           activeOpacity={0.75}
-          style={[styles.themeBtn, { backgroundColor: C.surface, borderColor: C.border }]}
+          style={[styles.themeBtn, { backgroundColor: C.surfaceAlt, borderColor: C.border }]}
         >
           <Ionicons
             name={theme === "dark" ? "sunny-outline" : "moon-outline"}
-            size={18}
+            size={17}
             color={C.accent}
           />
         </TouchableOpacity>
-      </View>
+      </Animated.View>
 
       {/* ── Content ── */}
       <View style={styles.content}>
-        {activeTab === "tasks"    && <EditTask theme={theme} onTaskChanged={handleTaskChanged} />}
-        {activeTab === "add"      && <AddTask     theme={theme} onTaskAdded={handleTaskChanged} />}
+        {activeTab === "tasks" && <EditTask theme={theme} onTaskChanged={handleTaskChanged} />}
+        {activeTab === "add" && <AddTask theme={theme} onTaskAdded={handleTaskChanged} />}
         {activeTab === "progress" && <ProgressTask key={refreshTrigger} theme={theme} />}
       </View>
 
-      {/* ── Tab Bar ── */}
-      <View style={[styles.tabBar, { backgroundColor: C.surface, borderTopColor: C.border }]}>
-        {TABS.map((tab) => {
-          const active = activeTab === tab.id;
-          return (
-            <TouchableOpacity
-              key={tab.id}
-              style={styles.tabItem}
-              onPress={() => setActiveTab(tab.id)}
-              activeOpacity={0.75}
-            >
-              <View style={[styles.tabIconWrap, active && { backgroundColor: C.accent + "20" }]}>
-                <Ionicons
-                  name={active ? tab.activeIcon : tab.icon}
-                  size={20}
-                  color={active ? C.accent : C.textSecondary}
-                />
-              </View>
-              <Text style={[styles.tabLabel, { color: active ? C.accent : C.textSecondary, fontWeight: active ? "700" : "500" }]}>
-                {tab.label}
-              </Text>
-            </TouchableOpacity>
-          );
-        })}
+      {/* ── Floating Tab Bar ── */}
+      <View style={styles.tabBarWrap} pointerEvents="box-none">
+        <View
+          style={[
+            styles.tabBar,
+            { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark },
+          ]}
+        >
+          {TABS.map((tab) => {
+            const active = activeTab === tab.id;
+            return (
+              <TouchableOpacity
+                key={tab.id}
+                style={styles.tabItem}
+                onPress={() => setActiveTab(tab.id)}
+                activeOpacity={0.8}
+              >
+                {active ? (
+                  <LinearGradient
+                    colors={C.accentGradient}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 1, y: 1 }}
+                    style={styles.tabIconWrapActive}
+                  >
+                    <Ionicons name={tab.activeIcon} size={18} color="#FFFFFF" />
+                  </LinearGradient>
+                ) : (
+                  <View style={[styles.tabIconWrap, { backgroundColor: C.surfaceAlt }]}>
+                    <Ionicons name={tab.icon} size={18} color={C.textSecondary} />
+                  </View>
+                )}
+                <Text
+                  style={[
+                    styles.tabLabel,
+                    {
+                      color: active ? C.accent : C.textSecondary,
+                      fontWeight: active ? "700" : "500",
+                    },
+                  ]}
+                >
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </View>
       </View>
 
-      {/* ── Sidebar overlay (mounted only while open or animating closed) ── */}
+      {/* ── Sidebar overlay ── */}
       {sidebarMounted && (
-        <View
-          style={[StyleSheet.absoluteFill, { zIndex: 999 }]}
-          pointerEvents="box-none"
-        >
-          {/* Backdrop — tapping it closes the sidebar, never the content behind it */}
+        <View style={StyleSheet.absoluteFill} pointerEvents="box-none">
+          {/* Backdrop */}
           <TouchableWithoutFeedback onPress={closeSidebar}>
             <Animated.View
               style={[
@@ -236,7 +326,7 @@ export default function Dashboard() {
             />
           </TouchableWithoutFeedback>
 
-          {/* Sliding panel — always anchored to the left edge, never full-screen */}
+          {/* Sidebar Panel */}
           <Animated.View
             style={[
               styles.sidebarPanel,
@@ -245,7 +335,6 @@ export default function Dashboard() {
                 backgroundColor: C.surface,
                 borderRightColor: C.border,
                 transform: [{ translateX }],
-                zIndex: 1000,
               },
             ]}
           >
@@ -264,53 +353,156 @@ export default function Dashboard() {
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
-  root: { flex: 1 },
+  root: {
+    flex: 1,
+  },
 
-  header: {
+  loadingContainer: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  loadingClay: {
+    width: 84,
+    height: 84,
+    borderRadius: 26,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+
+  headerCard: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 18,
-    paddingBottom: 12,
-    borderBottomWidth: 1,
+    marginHorizontal: 16,
+    marginTop: 6,
+    marginBottom: 4,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 24,
+    borderWidth: 1,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 6,
   },
-  appName: { fontSize: 18, fontWeight: "800", letterSpacing: -0.3, textAlign: "center" },
-  date:    { fontSize: 11, marginTop: 2, textAlign: "center" },
 
-  themeBtn: {
-    width: 36, height: 36,
-    borderRadius: 10,
+  headerCenter: {
+    alignItems: "center",
+    flex: 1,
+  },
+
+  eyebrow: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    marginBottom: 2,
+  },
+
+  appName: {
+    fontSize: 19,
+    fontWeight: "800",
+    letterSpacing: -0.4,
+    textAlign: "center",
+  },
+
+  date: {
+    fontSize: 11,
+    marginTop: 2,
+    textAlign: "center",
+  },
+
+  iconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
 
-  content: { flex: 1 },
+  themeBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  content: {
+    flex: 1,
+  },
+
+  tabBarWrap: {
+    paddingHorizontal: 16,
+    paddingBottom: Platform.OS === "ios" ? 26 : 14,
+    paddingTop: 6,
+  },
 
   tabBar: {
     flexDirection: "row",
-    borderTopWidth: 1,
-    paddingBottom: Platform.OS === "ios" ? 24 : 8,
-    paddingTop: 8,
-    paddingHorizontal: 8,
+    borderRadius: 26,
+    borderWidth: 1,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.22,
+    shadowRadius: 22,
+    elevation: 10,
   },
-  tabItem:     { flex: 1, alignItems: "center", gap: 3 },
-  tabIconWrap: { width: 40, height: 32, borderRadius: 10, alignItems: "center", justifyContent: "center" },
-  tabLabel:    { fontSize: 10, letterSpacing: 0.2 },
+
+  tabItem: {
+    flex: 1,
+    alignItems: "center",
+    gap: 4,
+  },
+
+  tabIconWrap: {
+    width: 42,
+    height: 34,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  tabIconWrapActive: {
+    width: 42,
+    height: 34,
+    borderRadius: 12,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  tabLabel: {
+    fontSize: 10,
+    letterSpacing: 0.2,
+  },
 
   backdrop: {
-    backgroundColor: "rgba(0,0,0,0.5)",
+    backgroundColor: "rgba(0,0,0,0.55)",
   },
+
   sidebarPanel: {
     position: "absolute",
     top: 0,
     bottom: 0,
     left: 0,
     borderRightWidth: 1,
+    borderTopRightRadius: 28,
+    borderBottomRightRadius: 28,
+    overflow: "hidden",
     shadowColor: "#000",
-    shadowOffset: { width: 4, height: 0 },
-    shadowOpacity: 0.25,
-    shadowRadius: 10,
+    shadowOffset: { width: 6, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
     elevation: 16,
+    zIndex: 1000,
   },
 });

@@ -8,9 +8,37 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 
+// ─── Theme Tokens (Claymorphism — same language as the rest of the app) ────
+// Dark = near-black with warm amber/orange accent + coral danger.
+// Bright = white / soft grey, same coral danger for consistency.
+// No blue, purple, violet, or pink anywhere in the palette.
 const THEMES = {
-  dark:   { sheet: "#1E293B", inputBg: "#0F172A", accent: "#EF4444", textPrimary: "#F8FAFC", textSecondary: "#94A3B8", border: "#334155", overlay: "rgba(0,0,0,0.6)" },
-  bright: { sheet: "#FFFFFF", inputBg: "#F1F5F9", accent: "#EF4444", textPrimary: "#0F172A", textSecondary: "#64748B", border: "#E2E8F0", overlay: "rgba(0,0,0,0.3)" },
+  dark: {
+    sheet: "#18181B",
+    surfaceAlt: "#212124",
+    inputBg: "#212124",
+    accent: "#FF8A3D",
+    danger: "#FF6B5B",
+    dangerDeep: "#E14A3B",
+    textPrimary: "#F5F5F4",
+    textSecondary: "#9B9B9F",
+    border: "#28282C",
+    overlay: "rgba(0,0,0,0.65)",
+    shadowDark: "#000000",
+  },
+  bright: {
+    sheet: "#FFFFFF",
+    surfaceAlt: "#EDEDEF",
+    inputBg: "#F4F4F5",
+    accent: "#FF7A2F",
+    danger: "#EF5A4C",
+    dangerDeep: "#D8402F",
+    textPrimary: "#1C1C1E",
+    textSecondary: "#7A7A80",
+    border: "#E6E6E9",
+    overlay: "rgba(20,15,10,0.4)",
+    shadowDark: "#B9B9C0",
+  },
 };
 
 export default function DeleteAccountModal({ visible, onClose, theme }: { visible: boolean; onClose: () => void; theme: "dark" | "bright" }) {
@@ -104,24 +132,39 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
         <Animated.View
           style={[
             styles.popup,
-            { backgroundColor: C.sheet, opacity: opacityAnim, transform: [{ scale: scaleAnim }] },
+            {
+              backgroundColor: C.sheet,
+              borderColor: C.danger + "30",
+              shadowColor: C.shadowDark,
+              opacity: opacityAnim,
+              transform: [{ scale: scaleAnim }],
+            },
           ]}
         >
           {/* Title row */}
           <View style={styles.titleRow}>
-            <Text style={[styles.title, { color: "#EF4444" }]}>
-              {step === "confirm" ? "Delete Account" : "Verify Identity"}
-            </Text>
-            <TouchableOpacity onPress={dismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Ionicons name="close" size={22} color={C.textSecondary} />
+            <View style={styles.titleLeft}>
+              <View style={[styles.titleIconWrap, { backgroundColor: C.danger + "1E", borderColor: C.danger + "38" }]}>
+                <Ionicons name={step === "confirm" ? "trash-outline" : "shield-checkmark-outline"} size={16} color={C.danger} />
+              </View>
+              <Text style={[styles.title, { color: C.danger }]}>
+                {step === "confirm" ? "Delete Account" : "Verify Identity"}
+              </Text>
+            </View>
+            <TouchableOpacity
+              onPress={dismiss}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={[styles.closeBtn, { backgroundColor: C.surfaceAlt }]}
+            >
+              <Ionicons name="close" size={17} color={C.textSecondary} />
             </TouchableOpacity>
           </View>
 
-          <View style={[styles.divider, { backgroundColor: C.border }]} />
-
           {/* Warning card */}
-          <View style={styles.warningCard}>
-            <Ionicons name="warning-outline" size={20} color="#EF4444" />
+          <View style={[styles.warningCard, { backgroundColor: C.danger + "14", borderColor: C.danger + "30" }]}>
+            <View style={[styles.warningIconWrap, { backgroundColor: C.danger + "1E" }]}>
+              <Ionicons name="warning-outline" size={16} color={C.danger} />
+            </View>
             <Text style={[styles.warningText, { color: C.textPrimary }]}>
               {step === "confirm"
                 ? "All your tasks, projects, and account data will be permanently deleted."
@@ -134,8 +177,11 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
               <Text style={[styles.description, { color: C.textSecondary }]}>
                 This action is permanent and cannot be undone. Please make sure you want to proceed before continuing.
               </Text>
-              <TouchableOpacity style={styles.deleteBtn} onPress={handleDeletePress} activeOpacity={0.85}>
-                <Text style={styles.deleteBtnText}>Delete My Account</Text>
+              <TouchableOpacity onPress={handleDeletePress} activeOpacity={0.85}>
+                <View style={[styles.deleteBtn, { backgroundColor: C.danger, shadowColor: C.danger }]}>
+                  <Ionicons name="trash-outline" size={16} color="#FFF" style={styles.deleteBtnIcon} />
+                  <Text style={styles.deleteBtnText}>Delete My Account</Text>
+                </View>
               </TouchableOpacity>
             </>
           ) : (
@@ -154,20 +200,29 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
                   autoFocus
                   returnKeyType="done"
                   onSubmitEditing={handleConfirmDelete}
+                  selectionColor={C.danger}
+                  cursorColor={C.danger}
                 />
-                <TouchableOpacity onPress={() => setPwVisible(v => !v)} style={styles.eyeBtn}>
-                  <Ionicons name={pwVisible ? "eye-off-outline" : "eye-outline"} size={20} color={C.textSecondary} />
+                <TouchableOpacity onPress={() => setPwVisible(v => !v)} style={styles.eyeBtn} hitSlop={8}>
+                  <Ionicons name={pwVisible ? "eye-off-outline" : "eye-outline"} size={18} color={C.textSecondary} />
                 </TouchableOpacity>
               </View>
               <TouchableOpacity
-                style={[styles.deleteBtn, loading && styles.btnDisabled]}
                 onPress={handleConfirmDelete}
                 disabled={loading}
                 activeOpacity={0.85}
+                style={loading ? styles.btnDisabled : undefined}
               >
-                {loading
-                  ? <ActivityIndicator color="#fff" />
-                  : <Text style={styles.deleteBtnText}>Confirm Delete</Text>}
+                <View style={[styles.deleteBtn, { backgroundColor: C.danger, shadowColor: C.danger }]}>
+                  {loading
+                    ? <ActivityIndicator color="#fff" />
+                    : (
+                      <>
+                        <Ionicons name="checkmark-circle-outline" size={16} color="#FFF" style={styles.deleteBtnIcon} />
+                        <Text style={styles.deleteBtnText}>Confirm Delete</Text>
+                      </>
+                    )}
+                </View>
               </TouchableOpacity>
             </>
           )}
@@ -190,27 +245,69 @@ const styles = StyleSheet.create({
   popup: {
     width: "100%",
     maxWidth: 420,
-    borderRadius: 20,
+    borderRadius: 26,
+    borderWidth: 1,
     paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 24,
+    paddingTop: 18,
+    paddingBottom: 22,
     elevation: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.3,
+    shadowRadius: 26,
   },
   titleRow:      { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-  title:         { fontSize: 17, fontWeight: "700" },
-  divider:       { height: 1, marginBottom: 16 },
-  warningCard:   { flexDirection: "row", alignItems: "flex-start", backgroundColor: "rgba(239,68,68,0.08)", padding: 12, borderRadius: 10, borderWidth: 1, borderColor: "rgba(239,68,68,0.2)", marginBottom: 16 },
-  warningText:   { fontSize: 13, marginLeft: 10, flex: 1, lineHeight: 18, fontWeight: "500" },
-  description:   { fontSize: 14, lineHeight: 20, marginBottom: 24 },
-  label:         { fontSize: 12, fontWeight: "600", marginBottom: 6, marginTop: 4 },
-  inputWrapper:  { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, minHeight: 48 },
+  titleLeft:     { flexDirection: "row", alignItems: "center", gap: 10 },
+  titleIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  closeBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title:         { fontSize: 15, fontWeight: "800", letterSpacing: -0.2 },
+  warningCard: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    padding: 12,
+    borderRadius: 15,
+    borderWidth: 1,
+    marginBottom: 16,
+  },
+  warningIconWrap: {
+    width: 28,
+    height: 28,
+    borderRadius: 9,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+  },
+  warningText:   { fontSize: 13, flex: 1, lineHeight: 18, fontWeight: "500" },
+  description:   { fontSize: 13, lineHeight: 19, marginBottom: 22 },
+  label:         { fontSize: 10, fontWeight: "700", letterSpacing: 0.7, textTransform: "uppercase", marginBottom: 8, marginTop: 4 },
+  inputWrapper:  { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 16, paddingHorizontal: 14, minHeight: 50 },
   inputInner:    { flex: 1, paddingVertical: 12, fontSize: 15 },
   eyeBtn:        { paddingLeft: 8 },
-  deleteBtn:     { backgroundColor: "#EF4444", borderRadius: 10, paddingVertical: 14, alignItems: "center", marginTop: 20 },
-  deleteBtnText: { color: "#fff", fontSize: 15, fontWeight: "700" },
+  deleteBtn: {
+    flexDirection: "row",
+    borderRadius: 16,
+    paddingVertical: 15,
+    alignItems: "center",
+    justifyContent: "center",
+    marginTop: 20,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.3,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  deleteBtnIcon: { marginRight: 7 },
+  deleteBtnText: { color: "#fff", fontSize: 14, fontWeight: "800" },
   btnDisabled:   { opacity: 0.7 },
 });

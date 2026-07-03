@@ -3,10 +3,37 @@ import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityInd
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { LinearGradient } from "expo-linear-gradient";
 
+// ─── Theme Tokens (Claymorphism — same language as the rest of the app) ────
+// Dark = near-black with warm amber/orange accent.
+// Bright = white / soft grey, same warm accent for consistency.
+// No blue, purple, violet, or pink anywhere in the palette.
 const THEMES = {
-  dark:   { sheet: "#1E293B", inputBg: "#0F172A", accent: "#6366F1", textPrimary: "#F8FAFC", textSecondary: "#94A3B8", border: "#334155", overlay: "rgba(0,0,0,0.6)" },
-  bright: { sheet: "#FFFFFF", inputBg: "#F1F5F9", accent: "#6366F1", textPrimary: "#0F172A", textSecondary: "#64748B", border: "#E2E8F0", overlay: "rgba(0,0,0,0.3)" },
+  dark: {
+    sheet: "#18181B",
+    surfaceAlt: "#212124",
+    inputBg: "#212124",
+    accent: "#FF8A3D",
+    accentGradient: ["#FF8A3D", "#FFB25E"] as const,
+    textPrimary: "#F5F5F4",
+    textSecondary: "#9B9B9F",
+    border: "#28282C",
+    overlay: "rgba(0,0,0,0.65)",
+    shadowDark: "#000000",
+  },
+  bright: {
+    sheet: "#FFFFFF",
+    surfaceAlt: "#EDEDEF",
+    inputBg: "#F4F4F5",
+    accent: "#FF7A2F",
+    accentGradient: ["#FF8A3D", "#FF6B1F"] as const,
+    textPrimary: "#1C1C1E",
+    textSecondary: "#7A7A80",
+    border: "#E6E6E9",
+    overlay: "rgba(20,15,10,0.4)",
+    shadowDark: "#B9B9C0",
+  },
 };
 
 export default function ChangeUsernameModal({ visible, onClose, theme }: { visible: boolean; onClose: () => void; theme: "dark" | "bright" }) {
@@ -72,49 +99,80 @@ export default function ChangeUsernameModal({ visible, onClose, theme }: { visib
         <Animated.View
           style={[
             styles.popup,
-            { backgroundColor: C.sheet, opacity: opacityAnim, transform: [{ scale: scaleAnim }] },
+            {
+              backgroundColor: C.sheet,
+              borderColor: C.border,
+              shadowColor: C.shadowDark,
+              opacity: opacityAnim,
+              transform: [{ scale: scaleAnim }],
+            },
           ]}
         >
           {/* Title row */}
           <View style={styles.titleRow}>
-            <Text style={[styles.title, { color: C.textPrimary }]}>Change Username</Text>
-            <TouchableOpacity onPress={dismiss} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
-              <Ionicons name="close" size={22} color={C.textSecondary} />
+            <View style={styles.titleLeft}>
+              <View style={[styles.titleIconWrap, { backgroundColor: C.accent + "1E", borderColor: C.accent + "35" }]}>
+                <Ionicons name="at-outline" size={16} color={C.accent} />
+              </View>
+              <Text style={[styles.title, { color: C.textPrimary }]}>Change Username</Text>
+            </View>
+            <TouchableOpacity
+              onPress={dismiss}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+              style={[styles.closeBtn, { backgroundColor: C.surfaceAlt }]}
+            >
+              <Ionicons name="close" size={17} color={C.textSecondary} />
             </TouchableOpacity>
           </View>
 
-          <View style={[styles.divider, { backgroundColor: C.border }]} />
-
           <Text style={[styles.label, { color: C.textSecondary }]}>Username</Text>
-          <TextInput
-            style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.textPrimary }]}
-            placeholder="New username"
-            placeholderTextColor={C.textSecondary}
-            value={username}
-            onChangeText={setUsername}
-            autoCapitalize="none"
-            autoCorrect={false}
-            autoFocus
-          />
+          <View style={[styles.inputWrapper, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+            <TextInput
+              style={[styles.inputInner, { color: C.textPrimary }]}
+              placeholder="New username"
+              placeholderTextColor={C.textSecondary}
+              value={username}
+              onChangeText={setUsername}
+              autoCapitalize="none"
+              autoCorrect={false}
+              autoFocus
+              selectionColor={C.accent}
+              cursorColor={C.accent}
+            />
+          </View>
 
           <Text style={[styles.label, { color: C.textSecondary }]}>Full Name</Text>
-          <TextInput
-            style={[styles.input, { backgroundColor: C.inputBg, borderColor: C.border, color: C.textPrimary }]}
-            placeholder="Full name"
-            placeholderTextColor={C.textSecondary}
-            value={fullName}
-            onChangeText={setFullName}
-          />
+          <View style={[styles.inputWrapper, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+            <TextInput
+              style={[styles.inputInner, { color: C.textPrimary }]}
+              placeholder="Full name"
+              placeholderTextColor={C.textSecondary}
+              value={fullName}
+              onChangeText={setFullName}
+              selectionColor={C.accent}
+              cursorColor={C.accent}
+            />
+          </View>
 
-          <Text style={[styles.note, { color: C.textSecondary }]}>You'll be signed out after saving.</Text>
+          <View style={[styles.noteRow, { backgroundColor: C.accent + "12", borderColor: C.accent + "28" }]}>
+            <Ionicons name="information-circle-outline" size={14} color={C.accent} style={styles.noteIcon} />
+            <Text style={[styles.note, { color: C.textSecondary }]}>You'll be signed out after saving.</Text>
+          </View>
 
           <TouchableOpacity
-            style={[styles.btn, { backgroundColor: C.accent, opacity: loading ? 0.7 : 1 }]}
             onPress={handleSave}
             disabled={loading}
             activeOpacity={0.85}
+            style={loading ? styles.btnDisabled : undefined}
           >
-            {loading ? <ActivityIndicator color="#fff" /> : <Text style={styles.btnText}>Save</Text>}
+            <LinearGradient
+              colors={C.accentGradient}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 0 }}
+              style={styles.btn}
+            >
+              {loading ? <ActivityIndicator color="#1A120B" /> : <Text style={styles.btnText}>Save</Text>}
+            </LinearGradient>
           </TouchableOpacity>
         </Animated.View>
       </KeyboardAvoidingView>
@@ -135,22 +193,41 @@ const styles = StyleSheet.create({
   popup: {
     width: "100%",
     maxWidth: 420,
-    borderRadius: 20,
+    borderRadius: 26,
+    borderWidth: 1,
     paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: 24,
+    paddingTop: 18,
+    paddingBottom: 22,
     elevation: 16,
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
+    shadowOffset: { width: 0, height: 14 },
+    shadowOpacity: 0.3,
+    shadowRadius: 26,
   },
-  titleRow:  { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
-  title:     { fontSize: 17, fontWeight: "700" },
-  divider:   { height: 1, marginBottom: 4 },
-  label:     { fontSize: 12, fontWeight: "600", marginBottom: 6, marginTop: 14 },
-  input:     { borderWidth: 1, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 12, fontSize: 15 },
-  note:      { fontSize: 12, marginTop: 12 },
-  btn:       { borderRadius: 10, paddingVertical: 14, alignItems: "center", marginTop: 20 },
-  btnText:   { color: "#fff", fontSize: 15, fontWeight: "700" },
+  titleRow:  { flexDirection: "row", justifyContent: "space-between", alignItems: "center", marginBottom: 18 },
+  titleLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
+  titleIconWrap: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  closeBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  title:        { fontSize: 15, fontWeight: "800", letterSpacing: -0.2 },
+  label:        { fontSize: 10, fontWeight: "700", letterSpacing: 0.7, textTransform: "uppercase", marginBottom: 8, marginTop: 4 },
+  inputWrapper: { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 16, paddingHorizontal: 14, minHeight: 50, marginBottom: 6 },
+  inputInner:   { flex: 1, paddingVertical: 12, fontSize: 15 },
+  noteRow:      { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 13, paddingHorizontal: 12, paddingVertical: 10, marginTop: 10 },
+  noteIcon:     { marginRight: 8 },
+  note:         { fontSize: 12, flex: 1 },
+  btn:          { borderRadius: 16, paddingVertical: 15, alignItems: "center", justifyContent: "center", marginTop: 20 },
+  btnDisabled:  { opacity: 0.7 },
+  btnText:      { color: "#1A120B", fontSize: 14, fontWeight: "800" },
 });
