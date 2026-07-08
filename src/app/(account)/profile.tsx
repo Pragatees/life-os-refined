@@ -11,6 +11,7 @@ import {
   Animated,
   Dimensions,
   Alert,
+  Image,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { LinearGradient } from "expo-linear-gradient";
@@ -73,6 +74,8 @@ export default function Profile() {
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
   const [email, setEmail] = useState("");
+  const [profilePicture, setProfilePicture] = useState("");
+  const [avatarLoadError, setAvatarLoadError] = useState(false);
   const [profileLoaded, setProfileLoaded] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
 
@@ -100,16 +103,19 @@ export default function Profile() {
   // ── Load theme + profile data from storage ────────────────────────────────
   useEffect(() => {
     let cancelled = false;
-    AsyncStorage.multiGet(["theme", "fullName", "username", "email"]).then((pairs) => {
-      if (cancelled) return;
-      const map = Object.fromEntries(pairs.map(([k, v]) => [k, v ?? ""]));
-      if (map.theme === "bright" || map.theme === "dark") setTheme(map.theme as Theme);
-      setFullName(map.fullName);
-      setUsername(map.username);
-      setEmail(map.email);
-      setThemeLoaded(true);
-      setProfileLoaded(true);
-    });
+    AsyncStorage.multiGet(["theme", "fullName", "username", "email", "profilePicture"]).then(
+      (pairs) => {
+        if (cancelled) return;
+        const map = Object.fromEntries(pairs.map(([k, v]) => [k, v ?? ""]));
+        if (map.theme === "bright" || map.theme === "dark") setTheme(map.theme as Theme);
+        setFullName(map.fullName);
+        setUsername(map.username);
+        setEmail(map.email);
+        setProfilePicture(map.profilePicture);
+        setThemeLoaded(true);
+        setProfileLoaded(true);
+      }
+    );
     return () => {
       cancelled = true;
     };
@@ -147,10 +153,21 @@ export default function Profile() {
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
   // ── Sign out: clear session data and send the user back to login ──────────
+  // NOTE: the login screen stores the JWT under the key "token" (see
+  // login.tsx AsyncStorage.multiSet call), not "authToken". "profilePicture"
+  // is cleared too so a new account doesn't briefly flash the previous
+  // user's avatar.
   const performSignOut = useCallback(async () => {
     try {
       setSigningOut(true);
-      await AsyncStorage.multiRemove(["authToken", "fullName", "username", "email"]);
+      await AsyncStorage.multiRemove([
+        "token",
+        "userId",
+        "fullName",
+        "username",
+        "email",
+        "profilePicture",
+      ]);
       router.replace("/(auth)/login" as any);
     } catch (e) {
       Alert.alert("Sign out failed", "Please try again.");
@@ -191,6 +208,11 @@ export default function Profile() {
         .map((w) => w[0]?.toUpperCase())
         .join("")
     : "?";
+
+  // Only try to render the photo if we have a non-empty URL AND it hasn't
+  // already failed to load once (e.g. dead link, expired Google URL, no
+  // network). Falls back to the initials avatar in either case.
+  const showAvatarImage = !!profilePicture && !avatarLoadError;
 
   return (
     <LinearGradient
@@ -260,14 +282,25 @@ export default function Profile() {
         >
           <View style={styles.avatarWrap}>
             <Animated.View style={{ transform: [{ scale: avatarScale }] }}>
-              <LinearGradient
-                colors={C.accentGradient}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={[styles.avatar, { shadowColor: C.shadowDark }]}
-              >
-                <Text style={styles.avatarText}>{initials}</Text>
-              </LinearGradient>
+              {showAvatarImage ? (
+                <View style={[styles.avatarImageWrap, { shadowColor: C.shadowDark, borderColor: C.border }]}>
+                  <Image
+                    source={{ uri: profilePicture }}
+                    style={styles.avatarImage}
+                    resizeMode="cover"
+                    onError={() => setAvatarLoadError(true)}
+                  />
+                </View>
+              ) : (
+                <LinearGradient
+                  colors={C.accentGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={[styles.avatar, { shadowColor: C.shadowDark }]}
+                >
+                  <Text style={styles.avatarText}>{initials}</Text>
+                </LinearGradient>
+              )}
             </Animated.View>
             {!!fullName && <Text style={[styles.avatarName, { color: C.textPrimary }]}>{fullName}</Text>}
             {!!username && <Text style={[styles.avatarHandle, { color: C.textSecondary }]}>@{username}</Text>}
@@ -449,6 +482,22 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.3,
     shadowRadius: 18,
+  },
+  avatarImageWrap: {
+    width: 92,
+    height: 92,
+    borderRadius: 30,
+    marginBottom: 12,
+    borderWidth: 1,
+    overflow: "hidden",
+    elevation: 8,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 18,
+  },
+  avatarImage: {
+    width: "100%",
+    height: "100%",
   },
   avatarText: { fontSize: 30, fontWeight: "800", color: "#1A120B" },
   avatarName: { fontSize: 17, fontWeight: "800", letterSpacing: -0.2 },

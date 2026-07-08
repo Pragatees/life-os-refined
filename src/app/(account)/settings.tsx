@@ -3,11 +3,12 @@ import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   View, Text, StyleSheet, TouchableOpacity, TouchableWithoutFeedback,
   Platform, StatusBar, ActivityIndicator, Animated, Dimensions, Switch, Linking,
+  Image,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import * as Notifications from "expo-notifications";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import Sidebar from "../(tabs)/sidebar";
 
 import ChangeUsernameModal from "./Setting/change_username";
@@ -57,9 +58,18 @@ export default function Settings() {
   const [dataLoaded, setDataLoaded]   = useState(false);
   const [activeModal, setActiveModal] = useState<ModalType>(null);
 
+  // ── Profile picture (mirrors the same pattern used on the Profile screen) ──
+  const [profilePicture, setProfilePicture] = useState("");
+  const [avatarLoadError, setAvatarLoadError] = useState(false);
+
   // ── Notification preference (app-level flag, separate from OS permission) ──
   const [notificationsEnabled, setNotificationsEnabled] = useState(true);
   const [notifBusy, setNotifBusy] = useState(false);
+
+  // ── Auth provider (e.g. "google") — accounts created via OAuth don't have
+  // an app-managed password, so the password rows should be hidden for them. ──
+  const [provider, setProvider] = useState("");
+  const isGoogleAccount = provider.trim().toLowerCase() === "google";
 
   const [sidebarOpen, setSidebarOpen]       = useState(false);
   const [sidebarMounted, setSidebarMounted] = useState(false);
@@ -85,21 +95,35 @@ export default function Settings() {
       "fullName",
       "username",
       "email",
+      "profilePicture",
       "notificationsEnabled",
+      "provider",
     ]).then((pairs) => {
       const map = Object.fromEntries(pairs.map(([k, v]) => [k, v ?? ""]));
       if (map.theme === "bright" || map.theme === "dark") setTheme(map.theme as Theme);
       setFullName(map.fullName);
       setUsername(map.username);
       setEmail(map.email);
+      setProfilePicture(map.profilePicture);
+      setAvatarLoadError(false);
       // Default to enabled if the key has never been set.
       setNotificationsEnabled(map.notificationsEnabled !== "false");
+      setProvider(map.provider);
       setThemeLoaded(true);
       setDataLoaded(true);
     });
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Refresh profile data (including the avatar) whenever this screen regains
+  // focus — e.g. coming back from /change_profilePic after a successful
+  // upload, without needing a logout or app restart.
+  useFocusEffect(
+    useCallback(() => {
+      loadData();
+    }, [loadData])
+  );
 
   useEffect(() => {
     if (themeLoaded && dataLoaded) {
@@ -132,6 +156,10 @@ export default function Settings() {
     setActiveModal(null);
     loadData(); // refresh displayed values after any edit
   }, [loadData]);
+
+  const goToChangeProfilePicture = useCallback(() => {
+    router.push( "./Setting/change_profilePic" as any);
+  }, []);
 
   // ── Notification toggle handler ──────────────────────────────────────────
   // Turning OFF is always instant (pure app-level flag).
@@ -181,6 +209,19 @@ export default function Settings() {
     );
   }
 
+  const initials = fullName
+    ? fullName
+        .split(" ")
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((w) => w[0]?.toUpperCase())
+        .join("")
+    : "?";
+
+  // Only try to render the photo if we have a non-empty URL AND it hasn't
+  // already failed to load once (dead link, expired URL, no network, etc.).
+  const showAvatarImage = !!profilePicture && !avatarLoadError;
+
   return (
     <View
       style={[
@@ -221,6 +262,53 @@ export default function Settings() {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
       >
+        {/* ── Profile picture ── */}
+        <View style={styles.avatarSection}>
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={goToChangeProfilePicture}
+            style={styles.avatarTouchable}
+          >
+            {showAvatarImage ? (
+              <View
+                style={[
+                  styles.avatarImageWrap,
+                  { borderColor: C.border, shadowColor: C.shadowDark },
+                ]}
+              >
+                <Image
+                  source={{ uri: profilePicture }}
+                  style={styles.avatarImage}
+                  resizeMode="cover"
+                  onError={() => setAvatarLoadError(true)}
+                />
+              </View>
+            ) : (
+              <View
+                style={[
+                  styles.avatarFallback,
+                  { backgroundColor: C.accent, shadowColor: C.shadowDark },
+                ]}
+              >
+                <Text style={styles.avatarInitials}>{initials}</Text>
+              </View>
+            )}
+
+            {/* Edit badge — tapping the avatar or the badge both navigate */}
+            <View
+              style={[
+                styles.editBadge,
+                { backgroundColor: C.accent, borderColor: C.surface },
+              ]}
+            >
+              <Ionicons name="camera" size={13} color="#1A120B" />
+            </View>
+          </TouchableOpacity>
+
+          {!!fullName && <Text style={[styles.avatarName, { color: C.textPrimary }]}>{fullName}</Text>}
+          {!!username && <Text style={[styles.avatarHandle, { color: C.textSecondary }]}>@{username}</Text>}
+        </View>
+
         {/* Your details */}
         <View style={styles.sectionHeader}>
           <View style={[styles.sectionIconWrap, { backgroundColor: C.surfaceAlt, borderColor: C.border }]}>
@@ -234,8 +322,13 @@ export default function Settings() {
           <InfoRow icon="at-outline" label="Username" value={username ? `@${username}` : "Not set"} color={C} />
           <Divider color={C.border} />
           <InfoRow icon="mail-outline" label="Email" value={email || "Not set"} color={C} />
-          <Divider color={C.border} />
-          <InfoRow icon="lock-closed-outline" label="Password" value="••••••••" color={C} />
+          {/* Password is app-managed only; Google-linked accounts have no app password to show. */}
+          {!isGoogleAccount && (
+            <>
+              <Divider color={C.border} />
+              <InfoRow icon="lock-closed-outline" label="Password" value="••••••••" color={C} />
+            </>
+          )}
         </View>
 
         {/* Preferences */}
@@ -282,8 +375,13 @@ export default function Settings() {
           <SettingsRow icon="person-outline"      label="Change Full Name" color={C} onPress={() => setActiveModal("fullname")}  />
           <Divider color={C.border} />
           <SettingsRow icon="mail-outline"        label="Change Email"     color={C} onPress={() => setActiveModal("email")}     />
-          <Divider color={C.border} />
-          <SettingsRow icon="lock-closed-outline" label="Change Password"  color={C} onPress={() => setActiveModal("password")} />
+          {/* Google-linked accounts authenticate via OAuth — no app password to change. */}
+          {!isGoogleAccount && (
+            <>
+              <Divider color={C.border} />
+              <SettingsRow icon="lock-closed-outline" label="Change Password"  color={C} onPress={() => setActiveModal("password")} />
+            </>
+          )}
         </View>
 
         {/* Danger zone */}
@@ -304,7 +402,9 @@ export default function Settings() {
       <ChangeUsernameModal  visible={activeModal === "username"}  onClose={handleModalClose} theme={theme} />
       <ChangeFullNameModal  visible={activeModal === "fullname"}  onClose={handleModalClose} theme={theme} />
       <ChangeEmailModal     visible={activeModal === "email"}     onClose={handleModalClose} theme={theme} />
-      <ChangePasswordModal  visible={activeModal === "password"}  onClose={handleModalClose} theme={theme} />
+      {!isGoogleAccount && (
+        <ChangePasswordModal visible={activeModal === "password"} onClose={handleModalClose} theme={theme} />
+      )}
       <DeleteAccountModal   visible={activeModal === "delete"}    onClose={handleModalClose} theme={theme} />
 
       {/* Sidebar */}
@@ -409,6 +509,47 @@ const styles = StyleSheet.create({
 
   scroll: { flex: 1 },
   scrollContent: { paddingHorizontal: 20, paddingTop: 22 },
+
+  // ── Avatar ──
+  avatarSection: { alignItems: "center", marginBottom: 26 },
+  avatarTouchable: { alignItems: "center", justifyContent: "center" },
+  avatarImageWrap: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    borderWidth: 1,
+    overflow: "hidden",
+    elevation: 8,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 18,
+  },
+  avatarImage: { width: "100%", height: "100%" },
+  avatarFallback: {
+    width: 88,
+    height: 88,
+    borderRadius: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    elevation: 8,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.3,
+    shadowRadius: 18,
+  },
+  avatarInitials: { fontSize: 28, fontWeight: "800", color: "#1A120B" },
+  editBadge: {
+    position: "absolute",
+    bottom: -2,
+    right: -2,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  avatarName: { fontSize: 16, fontWeight: "800", letterSpacing: -0.2, marginTop: 12 },
+  avatarHandle: { fontSize: 12, marginTop: 2 },
 
   sectionHeader: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
   sectionHeaderSpaced: { marginTop: 26 },

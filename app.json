@@ -4,25 +4,22 @@
     "slug": "life-os",
     "version": "1.0.0",
     "orientation": "portrait",
-
-    "icon": "./assets/images/All_in_all_logo.png",
-
+    "icon": "./assets/images/App_icon.png",
     "scheme": "lifeos",
     "userInterfaceStyle": "automatic",
 
     "ios": {
-      "icon": "./assets/images/All_in_all_logo.png"
+      "bundleIdentifier": "com.pragateesh7.lifeos",
+      "icon": "./assets/images/App icon.png"
     },
 
     "android": {
       "package": "com.pragateesh7.lifeos",
       "predictiveBackGestureEnabled": false,
-
       "adaptiveIcon": {
-        "foregroundImage": "./assets/images/All_in_all_logo.png",
+        "foregroundImage": "./assets/images/App_icon.png",
         "backgroundColor": "#FFFFFF"
       },
-
       "permissions": [
         "POST_NOTIFICATIONS",
         "VIBRATE"
@@ -31,7 +28,7 @@
 
     "web": {
       "output": "static",
-      "favicon": "./assets/images/All_in_all_logo.png"
+      "favicon": "./assets/images/favicon.png"
     },
 
     "plugins": [
@@ -41,7 +38,7 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#FFFFFF",
-          "image": "./assets/images/All_in_all_logo.png",
+          "image": "./assets/images/icon-when app open.png",
           "imageWidth": 220
         }
       ],
@@ -49,13 +46,23 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/images/All_in_all_logo.png",
+          "icon": "./assets/images/Notification.png",
           "color": "#F97316",
           "defaultChannel": "default"
         }
       ],
 
-      "@react-native-community/datetimepicker"
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow Life-OS to access your photos so you can change your profile picture.",
+          "cameraPermission": "Allow Life-OS to use your camera so you can take a profile picture."
+        }
+      ],
+
+      "@react-native-community/datetimepicker",
+      "@react-native-google-signin/google-signin",
+      "expo-web-browser"
     ],
 
     "experiments": {

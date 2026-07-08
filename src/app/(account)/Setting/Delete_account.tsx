@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   View, Text, TextInput, TouchableOpacity, StyleSheet,
   Alert, ActivityIndicator, KeyboardAvoidingView, Platform,
-  Modal, Animated, Pressable,
+  Modal, Animated, Pressable, Keyboard,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
@@ -41,10 +41,24 @@ const THEMES = {
   },
 };
 
+const API_BASE = "https://life-os-backend-1ozl.onrender.com/api/users";
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+// Steps:
+// "confirm"  -> initial warning screen
+// "password" -> local (username/password) users confirm with password
+// "email"    -> google users enter/confirm the email to receive the OTP
+// "otp"      -> google users confirm with emailed OTP
+type Step = "confirm" | "password" | "email" | "otp";
+
 export default function DeleteAccountModal({ visible, onClose, theme }: { visible: boolean; onClose: () => void; theme: "dark" | "bright" }) {
-  const [step, setStep]           = useState<"confirm" | "password">("confirm");
+  const [step, setStep]           = useState<Step>("confirm");
   const [password, setPassword]   = useState("");
+  const [otp, setOtp]             = useState("");
+  const [email, setEmail]         = useState("");
+  const [isGoogleUser, setIsGoogleUser] = useState(false);
   const [loading, setLoading]     = useState(false);
+  const [sendingOtp, setSendingOtp] = useState(false);
   const [pwVisible, setPwVisible] = useState(false);
   const scaleAnim   = useRef(new Animated.Value(0.85)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
@@ -52,6 +66,15 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
 
   useEffect(() => {
     if (visible) {
+      (async () => {
+        const [storedEmail, storedProvider] = await Promise.all([
+          AsyncStorage.getItem("email"),
+          AsyncStorage.getItem("provider"),
+        ]);
+        setEmail(storedEmail ?? "");
+        setIsGoogleUser((storedProvider ?? "").toLowerCase() === "google");
+      })();
+
       Animated.parallel([
         Animated.spring(scaleAnim,   { toValue: 1, useNativeDriver: true, damping: 18, stiffness: 220 }),
         Animated.timing(opacityAnim, { toValue: 1, duration: 180, useNativeDriver: true }),
@@ -60,6 +83,7 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
       scaleAnim.setValue(0.85);
       opacityAnim.setValue(0);
       setPassword("");
+      setOtp("");
       setStep("confirm");
       setPwVisible(false);
     }
@@ -72,17 +96,107 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
     ]).start(() => onClose());
   };
 
+  // ── Step 1: confirm intent, then branch by provider ─────────────────────
   const handleDeletePress = () => {
     Alert.alert(
       "Delete Account",
       "This action cannot be undone. All your tasks and account data will be permanently deleted.",
       [
         { text: "Cancel", style: "cancel" },
-        { text: "Delete", style: "destructive", onPress: () => setStep("password") },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: () => {
+            if (isGoogleUser) {
+              setStep("email");
+            } else {
+              setStep("password");
+            }
+          },
+        },
       ]
     );
   };
 
+  // ── Google users: send OTP to the email they typed/confirmed ─────────────
+  const handleSendOtp = async () => {
+    if (!email.trim()) {
+      Alert.alert("Error", "Please enter your email address");
+      return;
+    }
+    if (!EMAIL_REGEX.test(email.trim())) {
+      Alert.alert("Error", "Please enter a valid email address");
+      return;
+    }
+    try {
+      setSendingOtp(true);
+
+      const token = await AsyncStorage.getItem("token");
+
+      const response = await fetch(`${API_BASE}/delete-account/send-otp`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+
+      // Read as text first — response body may not always be valid JSON
+      // (e.g. a proxy/server error page), so this avoids a hard crash.
+      const responseText = await response.text();
+
+      let data: { message?: string } = {};
+      try {
+        data = responseText ? JSON.parse(responseText) : {};
+      } catch {
+        // Not JSON — fall back to the generic status-based message below.
+      }
+
+      if (response.ok) {
+        setStep("otp");
+        Keyboard.dismiss();
+      } else {
+        Alert.alert("Error", data.message || `Request failed (${response.status})`);
+      }
+    } catch (error) {
+      Alert.alert(
+        "Network Error",
+        error instanceof Error ? error.message : "Something went wrong. Try again."
+      );
+    } finally {
+      setSendingOtp(false);
+    }
+  };
+
+  // ── Google users: verify OTP and complete deletion ───────────────────────
+  const handleVerifyOtp = async () => {
+    if (!otp.trim()) {
+      Alert.alert("Error", "Please enter the verification code");
+      return;
+    }
+    try {
+      setLoading(true);
+      const token = await AsyncStorage.getItem("token");
+      const response = await fetch(`${API_BASE}/delete-account/verify-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ token: otp }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        await completeLogoutAndRedirect(data.message || "Your account has been deleted successfully.");
+      } else {
+        Alert.alert("Error", data.message || "Invalid or expired verification code");
+      }
+    } catch {
+      Alert.alert("Error", "Network error. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── Local users: verify password and delete directly ─────────────────────
   const handleConfirmDelete = async () => {
     if (!password.trim()) {
       Alert.alert("Error", "Please enter your password");
@@ -91,23 +205,14 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
     try {
       setLoading(true);
       const token = await AsyncStorage.getItem("token");
-      const response = await fetch("https://life-os-backend-1ozl.onrender.com/api/users/account", {
+      const response = await fetch(`${API_BASE}/account`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ password }),
       });
       const data = await response.json();
       if (response.ok) {
-        Alert.alert("Account Deleted", data.message || "Your account has been deleted successfully.", [
-          {
-            text: "OK",
-            onPress: async () => {
-              await AsyncStorage.removeItem("token");
-              dismiss();
-              router.replace("/");
-            },
-          },
-        ]);
+        await completeLogoutAndRedirect(data.message || "Your account has been deleted successfully.");
       } else {
         Alert.alert("Error", data.message || "Failed to delete account");
       }
@@ -117,6 +222,46 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
       setLoading(false);
     }
   };
+
+  // ── Shared: clear session, close modal, redirect ──────────────────────────
+  const completeLogoutAndRedirect = async (message: string) => {
+    Alert.alert("Account Deleted", message, [
+      {
+        text: "OK",
+        onPress: async () => {
+          await AsyncStorage.multiRemove([
+            "token", "username", "fullName", "email", "profilePicture", "provider",
+          ]);
+          dismiss();
+          router.replace("/");
+        },
+      },
+    ]);
+  };
+
+  const stepIcon = step === "confirm"
+    ? "trash-outline"
+    : step === "email"
+      ? "at-outline"
+      : step === "otp"
+        ? "mail-outline"
+        : "shield-checkmark-outline";
+
+  const stepTitle = step === "confirm"
+    ? "Delete Account"
+    : step === "email"
+      ? "Confirm Your Email"
+      : step === "otp"
+        ? "Verify Your Email"
+        : "Verify Identity";
+
+  const warningMessage = step === "confirm"
+    ? "All your tasks, projects, and account data will be permanently deleted."
+    : step === "email"
+      ? "Enter the email address linked to your account. We'll send a verification code to confirm permanent account deletion."
+      : step === "otp"
+        ? `Enter the verification code sent to ${email || "your email"} to confirm permanent account deletion.`
+        : "Enter your password to confirm permanent account deletion.";
 
   return (
     <Modal visible={visible} transparent animationType="none" onRequestClose={dismiss}>
@@ -145,11 +290,9 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
           <View style={styles.titleRow}>
             <View style={styles.titleLeft}>
               <View style={[styles.titleIconWrap, { backgroundColor: C.danger + "1E", borderColor: C.danger + "38" }]}>
-                <Ionicons name={step === "confirm" ? "trash-outline" : "shield-checkmark-outline"} size={16} color={C.danger} />
+                <Ionicons name={stepIcon as any} size={16} color={C.danger} />
               </View>
-              <Text style={[styles.title, { color: C.danger }]}>
-                {step === "confirm" ? "Delete Account" : "Verify Identity"}
-              </Text>
+              <Text style={[styles.title, { color: C.danger }]}>{stepTitle}</Text>
             </View>
             <TouchableOpacity
               onPress={dismiss}
@@ -165,14 +308,10 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
             <View style={[styles.warningIconWrap, { backgroundColor: C.danger + "1E" }]}>
               <Ionicons name="warning-outline" size={16} color={C.danger} />
             </View>
-            <Text style={[styles.warningText, { color: C.textPrimary }]}>
-              {step === "confirm"
-                ? "All your tasks, projects, and account data will be permanently deleted."
-                : "Enter your password to confirm permanent account deletion."}
-            </Text>
+            <Text style={[styles.warningText, { color: C.textPrimary }]}>{warningMessage}</Text>
           </View>
 
-          {step === "confirm" ? (
+          {step === "confirm" && (
             <>
               <Text style={[styles.description, { color: C.textSecondary }]}>
                 This action is permanent and cannot be undone. Please make sure you want to proceed before continuing.
@@ -184,7 +323,9 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
                 </View>
               </TouchableOpacity>
             </>
-          ) : (
+          )}
+
+          {step === "password" && (
             <>
               <Text style={[styles.label, { color: C.textSecondary }]}>Password</Text>
               <View style={[styles.inputWrapper, { backgroundColor: C.inputBg, borderColor: C.border }]}>
@@ -209,6 +350,92 @@ export default function DeleteAccountModal({ visible, onClose, theme }: { visibl
               </View>
               <TouchableOpacity
                 onPress={handleConfirmDelete}
+                disabled={loading}
+                activeOpacity={0.85}
+                style={loading ? styles.btnDisabled : undefined}
+              >
+                <View style={[styles.deleteBtn, { backgroundColor: C.danger, shadowColor: C.danger }]}>
+                  {loading
+                    ? <ActivityIndicator color="#fff" />
+                    : (
+                      <>
+                        <Ionicons name="checkmark-circle-outline" size={16} color="#FFF" style={styles.deleteBtnIcon} />
+                        <Text style={styles.deleteBtnText}>Confirm Delete</Text>
+                      </>
+                    )}
+                </View>
+              </TouchableOpacity>
+            </>
+          )}
+
+          {step === "email" && (
+            <>
+              <Text style={[styles.label, { color: C.textSecondary }]}>Email Address</Text>
+              <View style={[styles.inputWrapper, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+                <TextInput
+                  style={[styles.inputInner, { color: C.textPrimary }]}
+                  placeholder="Enter your email"
+                  placeholderTextColor={C.textSecondary}
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={handleSendOtp}
+                  selectionColor={C.danger}
+                  cursorColor={C.danger}
+                />
+              </View>
+              <TouchableOpacity
+                onPress={handleSendOtp}
+                disabled={sendingOtp}
+                activeOpacity={0.85}
+                style={sendingOtp ? styles.btnDisabled : undefined}
+              >
+                <View style={[styles.deleteBtn, { backgroundColor: C.danger, shadowColor: C.danger }]}>
+                  {sendingOtp
+                    ? <ActivityIndicator color="#fff" />
+                    : (
+                      <>
+                        <Ionicons name="paper-plane-outline" size={16} color="#FFF" style={styles.deleteBtnIcon} />
+                        <Text style={styles.deleteBtnText}>Send Verification Code</Text>
+                      </>
+                    )}
+                </View>
+              </TouchableOpacity>
+            </>
+          )}
+
+          {step === "otp" && (
+            <>
+              <Text style={[styles.label, { color: C.textSecondary }]}>Verification Code</Text>
+              <View style={[styles.inputWrapper, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+                <TextInput
+                  style={[styles.inputInner, { color: C.textPrimary, letterSpacing: 4 }]}
+                  placeholder="6-digit code"
+                  placeholderTextColor={C.textSecondary}
+                  value={otp}
+                  onChangeText={(v) => setOtp(v.replace(/[^0-9]/g, "").slice(0, 6))}
+                  keyboardType="number-pad"
+                  autoFocus
+                  returnKeyType="done"
+                  onSubmitEditing={handleVerifyOtp}
+                  selectionColor={C.danger}
+                  cursorColor={C.danger}
+                  maxLength={6}
+                />
+              </View>
+
+              <TouchableOpacity onPress={handleSendOtp} disabled={sendingOtp} style={styles.resendWrap}>
+                <Text style={[styles.resendText, { color: C.accent }]}>
+                  {sendingOtp ? "Resending..." : "Didn't get a code? Resend"}
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                onPress={handleVerifyOtp}
                 disabled={loading}
                 activeOpacity={0.85}
                 style={loading ? styles.btnDisabled : undefined}
@@ -295,6 +522,8 @@ const styles = StyleSheet.create({
   inputWrapper:  { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 16, paddingHorizontal: 14, minHeight: 50 },
   inputInner:    { flex: 1, paddingVertical: 12, fontSize: 15 },
   eyeBtn:        { paddingLeft: 8 },
+  resendWrap:    { alignSelf: "flex-start", marginTop: 10 },
+  resendText:    { fontSize: 12, fontWeight: "700" },
   deleteBtn: {
     flexDirection: "row",
     borderRadius: 16,

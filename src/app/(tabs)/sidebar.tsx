@@ -11,6 +11,7 @@ import {
   ScrollView,
   ViewStyle,
   TextStyle,
+  Image,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { router } from "expo-router";
@@ -66,7 +67,7 @@ interface SidebarProps {
   onThemeChange: Dispatch<SetStateAction<Theme>>;
 }
 
-const STORAGE_KEYS = ["token", "userId", "username", "fullName", "email", "theme"];
+const STORAGE_KEYS = ["token", "userId", "username", "fullName", "email", "profilePicture", "theme"];
 
 const MENU_ITEMS: {
   label: string;
@@ -89,6 +90,8 @@ const getInitials = (name: string) => {
 export default function Sidebar({ onClose, currentTheme, onThemeChange }: SidebarProps) {
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
+  const [profilePicture, setProfilePicture] = useState("");
+  const [avatarLoadFailed, setAvatarLoadFailed] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const isDark = currentTheme === "dark";
@@ -100,13 +103,15 @@ export default function Sidebar({ onClose, currentTheme, onThemeChange }: Sideba
   useEffect(() => {
     let cancelled = false;
     const loadData = async () => {
-      const [name, user] = await Promise.all([
+      const [name, user, picture] = await Promise.all([
         AsyncStorage.getItem("fullName"),
         AsyncStorage.getItem("username"),
+        AsyncStorage.getItem("profilePicture"),
       ]);
       if (cancelled) return;
       setFullName(name || "");
       setUsername(user || "");
+      setProfilePicture(picture || "");
       setLoading(false);
     };
     loadData();
@@ -164,6 +169,11 @@ export default function Sidebar({ onClose, currentTheme, onThemeChange }: Sideba
     );
   }
 
+  // Only attempt to render the remote image if we actually have a usable URL
+  // and it hasn't already failed to load once this session — otherwise fall
+  // back to the initials avatar.
+  const showImageAvatar = !!profilePicture && !avatarLoadFailed;
+
   return (
     <View style={[styles.flex, { backgroundColor: C.bg }]}>
       <TouchableOpacity
@@ -186,14 +196,22 @@ export default function Sidebar({ onClose, currentTheme, onThemeChange }: Sideba
         >
           {/* User block */}
           <View style={[cardStyles.card, styles.userCard, { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark }]}>
-            <LinearGradient
-              colors={C.accentGradient}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.avatar}
-            >
-              <Text style={styles.avatarText}>{getInitials(fullName || username || "?")}</Text>
-            </LinearGradient>
+            {showImageAvatar ? (
+              <Image
+                source={{ uri: profilePicture }}
+                style={[styles.avatar, { backgroundColor: C.surfaceAlt }]}
+                onError={() => setAvatarLoadFailed(true)}
+              />
+            ) : (
+              <LinearGradient
+                colors={C.accentGradient}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={styles.avatar}
+              >
+                <Text style={styles.avatarText}>{getInitials(fullName || username || "?")}</Text>
+              </LinearGradient>
+            )}
             <View style={styles.userTextWrap}>
               <Text style={[styles.fullName, { color: C.textPrimary }]} numberOfLines={1}>
                 {fullName || "Unnamed User"}

@@ -18,6 +18,9 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 
+import { RecurrenceType } from "../../types/recurrence";
+import { createRecurringRule } from "../../services/recurrenceService";
+
 const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
 
 // ─── Theme Tokens (Claymorphism) ───────────────────────────────────────────
@@ -85,6 +88,14 @@ const PRIORITIES: {
   { value: "LOW", label: "Low", colorKey: "priorityLow", icon: "leaf-outline" },
 ];
 
+const REPEAT_OPTIONS: { value: RecurrenceType; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+  { value: "NONE", label: "Never", icon: "close-circle-outline" },
+  { value: "DAILY", label: "Daily", icon: "sunny-outline" },
+  { value: "WEEKLY", label: "Weekly", icon: "calendar-outline" },
+  { value: "MONTHLY", label: "Monthly", icon: "calendar-number-outline" },
+  { value: "CUSTOM", label: "Every X Days", icon: "repeat-outline" },
+];
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function AddTaskComponent({ onTaskAdded, theme = "dark" }: AddTaskProps) {
   const C: ThemeTokens = theme === "bright" ? BRIGHT : DARK;
@@ -96,6 +107,10 @@ export default function AddTaskComponent({ onTaskAdded, theme = "dark" }: AddTas
   const [priority, setPriority] = useState<Priority>("MEDIUM");
   const [pickerMode, setPickerMode] = useState<PickerMode>(null);
   const [loading, setLoading] = useState(false);
+
+  // ── Recurrence (frontend-only — never sent to the backend) ────────────────
+  const [repeatType, setRepeatType] = useState<RecurrenceType>("NONE");
+  const [everyXDays, setEveryXDays] = useState("3");
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(16)).current;
@@ -129,11 +144,30 @@ export default function AddTaskComponent({ onTaskAdded, theme = "dark" }: AddTas
   const fmtDateDB = (d: Date) => d.toISOString().split("T")[0];
   const fmtTimeDB = (t: Date) => `${t.getHours().toString().padStart(2, "0")}:${t.getMinutes().toString().padStart(2, "0")}`;
 
+  const resetForm = () => {
+    setTaskName("");
+    setDescription("");
+    setSelectedDate(new Date());
+    setSelectedTime(new Date());
+    setPriority("MEDIUM");
+    setRepeatType("NONE");
+    setEveryXDays("3");
+  };
+
   const handleAddTask = async () => {
     if (!taskName.trim()) {
       Alert.alert("Missing Task Name", "Please enter a task name.");
       return;
     }
+
+    if (repeatType === "CUSTOM") {
+      const parsed = parseInt(everyXDays, 10);
+      if (!parsed || parsed < 1) {
+        Alert.alert("Invalid Interval", "Enter how many days between repeats (1 or more).");
+        return;
+      }
+    }
+
     try {
       setLoading(true);
       const token = await AsyncStorage.getItem("token");
@@ -142,25 +176,56 @@ export default function AddTaskComponent({ onTaskAdded, theme = "dark" }: AddTas
         return;
       }
 
+      const trimmedName = taskName.trim();
+      const trimmedDescription = description.trim();
+      const taskDate = fmtDateDB(selectedDate);
+      const taskTime = fmtTimeDB(selectedTime);
+
+      // Existing Create Task API call — unchanged. Recurrence is never sent here.
       const response = await fetch(`${API_URL}/tasks`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({
-          taskName: taskName.trim(),
-          description: description.trim(),
-          taskDate: fmtDateDB(selectedDate),
-          taskTime: fmtTimeDB(selectedTime),
+          taskName: trimmedName,
+          description: trimmedDescription,
+          taskDate,
+          taskTime,
           priority,
         }),
       });
 
       if (response.ok) {
+        // If the user picked a repeat option, save the recurrence rule locally
+        // and link it to the newly created task so future occurrences can be
+        // generated automatically (on complete / app start / midnight reset).
+        if (repeatType !== "NONE") {
+          const created = await response.json().catch(() => null);
+          const newTaskId: string | undefined = created?.id;
+
+          if (newTaskId) {
+            try {
+              await createRecurringRule({
+                taskId: newTaskId,
+                type: repeatType,
+                intervalDays: repeatType === "CUSTOM" ? parseInt(everyXDays, 10) : undefined,
+                anchorDate: taskDate,
+                taskName: trimmedName,
+                description: trimmedDescription,
+                taskTime,
+                priority,
+              });
+            } catch (e) {
+              console.warn("[AddTask] Failed to save recurrence rule locally:", e);
+            }
+          } else {
+            console.warn(
+              "[AddTask] Task created but no id was returned — recurrence rule was not saved."
+            );
+          }
+        }
+
         Alert.alert("Task Added", "Your task has been added successfully.");
-        setTaskName("");
-        setDescription("");
-        setSelectedDate(new Date());
-        setSelectedTime(new Date());
-        setPriority("MEDIUM");
+        resetForm();
         onTaskAdded?.();
       } else {
         const err = await response.json().catch(() => null);
@@ -301,6 +366,63 @@ export default function AddTaskComponent({ onTaskAdded, theme = "dark" }: AddTas
               );
             })}
           </View>
+
+          {/* Repeat (frontend-only recurrence — never sent to the backend) */}
+          <Text style={[lbl.text, { color: C.textSecondary }]}>Repeat</Text>
+          <View style={repeatStyles.wrap}>
+            {REPEAT_OPTIONS.map((opt) => {
+              const active = repeatType === opt.value;
+              return (
+                <TouchableOpacity
+                  key={opt.value}
+                  onPress={() => setRepeatType(opt.value)}
+                  activeOpacity={0.8}
+                  style={[
+                    repeatStyles.chip,
+                    {
+                      borderColor: active ? C.accent : C.border,
+                      backgroundColor: active ? `${C.accent}18` : C.surfaceAlt,
+                    },
+                  ]}
+                >
+                  <Ionicons
+                    name={opt.icon}
+                    size={13}
+                    color={active ? C.accent : C.textSecondary}
+                    style={styles.iconSpacer}
+                  />
+                  <Text
+                    style={{
+                      fontSize: 12,
+                      color: active ? C.accent : C.textSecondary,
+                      fontWeight: active ? "700" : "500",
+                    }}
+                  >
+                    {opt.label}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+
+          {repeatType === "CUSTOM" && (
+            <View style={[repeatStyles.intervalRow, { borderColor: C.border, backgroundColor: C.surfaceAlt }]}>
+              <Text style={{ color: C.textSecondary, fontSize: 13, marginRight: 10 }}>Every</Text>
+              <TextInput
+                style={[
+                  repeatStyles.intervalInput,
+                  { borderColor: C.border, color: C.textPrimary, backgroundColor: C.surface },
+                ]}
+                value={everyXDays}
+                onChangeText={(t) => setEveryXDays(t.replace(/[^0-9]/g, "").slice(0, 3))}
+                keyboardType="number-pad"
+                maxLength={3}
+                selectionColor={C.accent}
+                cursorColor={C.accent}
+              />
+              <Text style={{ color: C.textSecondary, fontSize: 13, marginLeft: 10 }}>Days</Text>
+            </View>
+          )}
 
           {/* Submit */}
           <TouchableOpacity
@@ -457,6 +579,42 @@ const prio = StyleSheet.create({
     borderRadius: 14,
     paddingVertical: 11,
   } as ViewStyle,
+});
+
+const repeatStyles = StyleSheet.create({
+  wrap: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    marginBottom: 14,
+    gap: 8,
+  } as ViewStyle,
+  chip: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingVertical: 9,
+    paddingHorizontal: 12,
+  } as ViewStyle,
+  intervalRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 20,
+  } as ViewStyle,
+  intervalInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    fontSize: 14,
+    minWidth: 56,
+    textAlign: "center",
+  } as TextStyle,
 });
 
 const sub = StyleSheet.create({

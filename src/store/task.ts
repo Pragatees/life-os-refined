@@ -11,10 +11,17 @@ import { Task, Priority } from "../types/task";
 import {
   rescheduleAllNotifications,
   cancelAllTaskNotifications as cancelTaskNotifications,
+  cancelAllNotifications,
   getPermissionsStatus,
   getTodayDateString,
   fireLoginWelcomeNotification,
 } from "../services/notificationService";
+import {
+  processRecurringTasks,
+  generateNextOccurrenceForTask,
+  updateRecurringRuleForTask,
+  getRuleIdForTask,
+} from "../services/recurrenceService";
 
 export type { Priority };
 export type { Task };
@@ -43,7 +50,12 @@ interface TaskState {
     payload: Omit<Task, "id" | "completed">
   ) => Promise<{ ok: boolean; error?: string }>;
   onLoginSuccess: (userName?: string) => Promise<void>;
+  onLogout: () => Promise<void>;
   resetForNewDayIfNeeded: () => void;
+  // ── Recurrence (frontend-only, see recurrenceService.ts) ──────────────────
+  // Call this once on app startup (e.g. from your root App component or the
+  // login flow) to catch up any recurring tasks that are due but missing.
+  initRecurringTasks: () => Promise<void>;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -102,6 +114,10 @@ export const useTaskStore = create<TaskState>()(
       // If the locally stored snapshot belongs to a previous calendar day,
       // wipe it so the day starts fresh. The next fetchTasks() call repopulates
       // from the server as normal — this only guards the *local cache*.
+      //
+      // This is also the "midnight reset" hook for recurrence: whenever a new
+      // day is detected we kick off processRecurringTasks() in the background
+      // so any due recurring tasks get created without blocking the UI.
       resetForNewDayIfNeeded: () => {
         const today = getTodayDateString();
         const { storedDay } = get();
@@ -115,6 +131,17 @@ export const useTaskStore = create<TaskState>()(
             lastFetchedAt: null,
             storedDay: today,
           });
+
+          // Fire-and-forget: generate any recurring tasks due for the new day,
+          // then refresh so they show up + get notifications scheduled.
+          processRecurringTasks()
+            .then(({ generated }) => {
+              if (generated > 0) {
+                console.log(`[TaskStore] Midnight reset generated ${generated} recurring task(s).`);
+                get().fetchTasks(true);
+              }
+            })
+            .catch((e) => console.warn("[TaskStore] processRecurringTasks (midnight) failed:", e));
         }
       },
 
@@ -207,6 +234,17 @@ export const useTaskStore = create<TaskState>()(
             // updated completion state.
             await safeScheduleNotifications(get().tasks);
 
+            // ── Recurrence: if this task belongs to a recurring rule, create
+            // the next occurrence right away via the existing Create Task API.
+            // The old, now-completed task is left untouched.
+            const ruleId = await getRuleIdForTask(taskId);
+            if (ruleId) {
+              const created = await generateNextOccurrenceForTask(taskId);
+              if (created) {
+                await get().fetchTasks(true);
+              }
+            }
+
             return { ok: true };
           } else {
             // Roll back optimistic update
@@ -235,6 +273,17 @@ export const useTaskStore = create<TaskState>()(
           });
 
           if (res.ok) {
+            // ── Recurrence: if this task is part of a recurring series, keep
+            // the rule's template in sync so FUTURE occurrences pick up the
+            // new name/time/priority. Already-completed occurrences are
+            // untouched since they're independent tasks on the backend.
+            await updateRecurringRuleForTask(taskId, {
+              taskName: payload.taskName,
+              description: payload.description,
+              taskTime: payload.taskTime,
+              priority: payload.priority,
+            });
+
             // fetchTasks calls safeScheduleNotifications internally
             await get().fetchTasks(true);
             return { ok: true };
@@ -254,6 +303,11 @@ export const useTaskStore = create<TaskState>()(
       // Creates a task on the server, then refetches — which re-runs the
       // full notification logic (today-check, 30-min lead check, 15-min-before
       // reminder) described in Point 3 for the newly stored task.
+      //
+      // NOTE: Recurrence setup itself happens in AddTaskComponent right after
+      // a successful creation (it has the recurrence UI state and the raw
+      // response body with the new task's id). This function is unchanged
+      // for plain, non-recurring adds.
       addTask: async (payload) => {
         get().resetForNewDayIfNeeded();
 
@@ -293,9 +347,61 @@ export const useTaskStore = create<TaskState>()(
         } catch (e) {
           console.warn("[TaskStore] Login welcome notification failed:", e);
         }
-        // Pull fresh tasks right after login so reminders are scheduled
-        // immediately rather than waiting for the next screen mount.
+        // Catch up any recurring tasks that came due while the user was away,
+        // then pull fresh tasks so reminders are scheduled immediately rather
+        // than waiting for the next screen mount.
+        await get().initRecurringTasks();
         await get().fetchTasks(true);
+      },
+
+      // ── initRecurringTasks (App Startup) ────────────────────────────────────
+      // Checks every locally stored recurrence rule and generates any missing
+      // occurrence (at most one per rule — see processRecurringTasks). Safe to
+      // call every app launch; it's a no-op when nothing is due.
+      initRecurringTasks: async () => {
+        try {
+          const { generated } = await processRecurringTasks();
+          if (generated > 0) {
+            console.log(`[TaskStore] Startup recurrence check generated ${generated} task(s).`);
+          }
+        } catch (e) {
+          console.warn("[TaskStore] initRecurringTasks failed:", e);
+        }
+      },
+
+      // ── onLogout ─────────────────────────────────────────────────────────────
+      // Call this from your logout button / settings screen, e.g.:
+      //   await useTaskStore.getState().onLogout();
+      //   navigation.replace("Login");
+      //
+      // This is the fix for "notifications still arrive after logout": it
+      // cancels every OS-armed notification (recurring + per-task) AND wipes
+      // the entire notif_* ledger via cancelAllNotifications(), then clears
+      // the auth token and resets in-memory + persisted task state so the
+      // next login starts completely clean.
+      onLogout: async () => {
+        try {
+          await cancelAllNotifications();
+        } catch (e) {
+          console.warn(
+            "[TaskStore] Failed to cancel notifications on logout:",
+            e
+          );
+        }
+
+        try {
+          await AsyncStorage.removeItem("token");
+        } catch (e) {
+          console.warn("[TaskStore] Failed to remove token on logout:", e);
+        }
+
+        set({
+          tasks: [],
+          lastFetchedAt: null,
+          loading: false,
+          error: null,
+          storedDay: null,
+        });
       },
     }),
     {

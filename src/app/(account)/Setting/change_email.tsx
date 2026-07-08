@@ -40,10 +40,19 @@ const THEMES = {
   },
 };
 
+const BASE_URL = "https://life-os-backend-1ozl.onrender.com/api";
+
+type Step = "password" | "email" | "otp";
+
 export default function ChangeEmailModal({ visible, onClose, theme }: { visible: boolean; onClose: () => void; theme: "dark" | "bright" }) {
-  const [step, setStep]           = useState<"password" | "email">("password");
+  // For Google accounts (no password on file) we skip straight to the email
+  // step, then use the OTP send/verify flow instead of the password-gated
+  // PATCH flow used for regular email/password accounts.
+  const [isGoogleAccount, setIsGoogleAccount] = useState(false);
+  const [step, setStep]           = useState<Step>("password");
   const [password, setPassword]   = useState("");
   const [email, setEmail]         = useState("");
+  const [otp, setOtp]             = useState("");
   const [loading, setLoading]     = useState(false);
   const [pwVisible, setPwVisible] = useState(false);
   const scaleAnim   = useRef(new Animated.Value(0.85)).current;
@@ -52,6 +61,14 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
 
   useEffect(() => {
     if (visible) {
+      (async () => {
+        const provider = await AsyncStorage.getItem("provider");
+        const google = (provider ?? "").toUpperCase() === "GOOGLE";
+        setIsGoogleAccount(google);
+        // Google accounts have no password to verify, so start on the email step.
+        setStep(google ? "email" : "password");
+      })();
+
       Animated.parallel([
         Animated.spring(scaleAnim,   { toValue: 1,   useNativeDriver: true, damping: 18, stiffness: 220 }),
         Animated.timing(opacityAnim, { toValue: 1,   duration: 180, useNativeDriver: true }),
@@ -61,6 +78,7 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
       opacityAnim.setValue(0);
       setPassword("");
       setEmail("");
+      setOtp("");
       setStep("password");
       setPwVisible(false);
     }
@@ -81,7 +99,7 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
     try {
       setLoading(true);
       const token = await AsyncStorage.getItem("token");
-      const response = await fetch("https://life-os-backend-1ozl.onrender.com/api/users/verify-password", {
+      const response = await fetch(`${BASE_URL}/users/verify-password`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ password }),
@@ -99,20 +117,22 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
     }
   };
 
+  const isValidEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+
+  // Regular (email/password) accounts: verify password, then PATCH the email directly.
   const handleUpdateEmail = async () => {
     if (!email.trim()) {
       Alert.alert("Error", "Please enter an email");
       return;
     }
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
+    if (!isValidEmail(email)) {
       Alert.alert("Error", "Please enter a valid email address");
       return;
     }
     try {
       setLoading(true);
       const token = await AsyncStorage.getItem("token");
-      const response = await fetch("https://life-os-backend-1ozl.onrender.com/api/users/email", {
+      const response = await fetch(`${BASE_URL}/users/email`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ newEmail: email }),
@@ -137,6 +157,85 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
     } finally {
       setLoading(false);
     }
+  };
+
+  // Google accounts: send an OTP to the new email address.
+  const handleSendOtp = async () => {
+    if (!email.trim()) {
+      Alert.alert("Error", "Please enter an email");
+      return;
+    }
+    if (!isValidEmail(email)) {
+      Alert.alert("Error", "Please enter a valid email address");
+      return;
+    }
+    try {
+      setLoading(true);
+      const token = await AsyncStorage.getItem("token");
+      const response = await fetch(`${BASE_URL}/users/change-email/send-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ newEmail: email }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        setStep("otp");
+      } else {
+        Alert.alert("Error", data.message || "Failed to send verification code");
+      }
+    } catch {
+      Alert.alert("Error", "Network error. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Google accounts: verify the OTP and complete the email change.
+  const handleVerifyOtp = async () => {
+    if (!otp.trim()) {
+      Alert.alert("Error", "Please enter the verification code");
+      return;
+    }
+    try {
+      setLoading(true);
+      const token = await AsyncStorage.getItem("token");
+      const response = await fetch(`${BASE_URL}/users/change-email/verify-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ token: otp }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        Alert.alert("Email Updated", data.message || "Email updated successfully.", [
+          {
+            text: "OK",
+            onPress: async () => {
+              await AsyncStorage.removeItem("token");
+              dismiss();
+              router.replace("/login");
+            },
+          },
+        ]);
+      } else {
+        Alert.alert("Error", data.message || "Invalid or expired verification code");
+      }
+    } catch {
+      Alert.alert("Error", "Network error. Try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const titleForStep = () => {
+    if (step === "password") return "Verify Identity";
+    if (step === "email") return "Change Email";
+    return "Verify Email";
+  };
+
+  const iconForStep = () => {
+    if (step === "password") return "shield-checkmark-outline";
+    if (step === "email") return "mail-outline";
+    return "key-outline";
   };
 
   return (
@@ -166,10 +265,10 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
           <View style={styles.titleRow}>
             <View style={styles.titleLeft}>
               <View style={[styles.titleIconWrap, { backgroundColor: C.accent + "1E", borderColor: C.accent + "35" }]}>
-                <Ionicons name={step === "password" ? "shield-checkmark-outline" : "mail-outline"} size={16} color={C.accent} />
+                <Ionicons name={iconForStep() as any} size={16} color={C.accent} />
               </View>
               <Text style={[styles.title, { color: C.textPrimary }]}>
-                {step === "password" ? "Verify Identity" : "Change Email"}
+                {titleForStep()}
               </Text>
             </View>
             <TouchableOpacity
@@ -181,7 +280,7 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
             </TouchableOpacity>
           </View>
 
-          {step === "password" ? (
+          {step === "password" && (
             <>
               <Text style={[styles.label, { color: C.textSecondary }]}>Current Password</Text>
               <View style={[styles.inputWrapper, { backgroundColor: C.inputBg, borderColor: C.border }]}>
@@ -223,7 +322,9 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
                 </LinearGradient>
               </TouchableOpacity>
             </>
-          ) : (
+          )}
+
+          {step === "email" && (
             <>
               <Text style={[styles.label, { color: C.textSecondary }]}>New Email</Text>
               <View style={[styles.inputWrapper, { backgroundColor: C.inputBg, borderColor: C.border }]}>
@@ -241,8 +342,13 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
                   cursorColor={C.accent}
                 />
               </View>
+              {isGoogleAccount && (
+                <Text style={[styles.hint, { color: C.textSecondary }]}>
+                  We'll send a verification code to this address.
+                </Text>
+              )}
               <TouchableOpacity
-                onPress={handleUpdateEmail}
+                onPress={isGoogleAccount ? handleSendOtp : handleUpdateEmail}
                 disabled={loading}
                 activeOpacity={0.85}
                 style={loading ? styles.btnDisabled : undefined}
@@ -253,8 +359,55 @@ export default function ChangeEmailModal({ visible, onClose, theme }: { visible:
                   end={{ x: 1, y: 0 }}
                   style={styles.btn}
                 >
-                  {loading ? <ActivityIndicator color="#1A120B" /> : <Text style={styles.btnText}>Save</Text>}
+                  {loading ? <ActivityIndicator color="#1A120B" /> : (
+                    <Text style={styles.btnText}>{isGoogleAccount ? "Send Code" : "Save"}</Text>
+                  )}
                 </LinearGradient>
+              </TouchableOpacity>
+            </>
+          )}
+
+          {step === "otp" && (
+            <>
+              <Text style={[styles.label, { color: C.textSecondary }]}>Verification Code</Text>
+              <View style={[styles.inputWrapper, { backgroundColor: C.inputBg, borderColor: C.border }]}>
+                <TextInput
+                  style={[styles.inputInner, { color: C.textPrimary }]}
+                  placeholder="Enter 6-digit code"
+                  placeholderTextColor={C.textSecondary}
+                  value={otp}
+                  onChangeText={setOtp}
+                  keyboardType="number-pad"
+                  maxLength={6}
+                  autoFocus
+                  selectionColor={C.accent}
+                  cursorColor={C.accent}
+                />
+              </View>
+              <Text style={[styles.hint, { color: C.textSecondary }]}>
+                Sent to {email}
+              </Text>
+              <TouchableOpacity
+                onPress={handleVerifyOtp}
+                disabled={loading}
+                activeOpacity={0.85}
+                style={loading ? styles.btnDisabled : undefined}
+              >
+                <LinearGradient
+                  colors={C.accentGradient}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.btn}
+                >
+                  {loading ? <ActivityIndicator color="#1A120B" /> : <Text style={styles.btnText}>Verify & Save</Text>}
+                </LinearGradient>
+              </TouchableOpacity>
+              <TouchableOpacity
+                onPress={handleSendOtp}
+                disabled={loading}
+                style={styles.resendBtn}
+              >
+                <Text style={[styles.resendText, { color: C.accent }]}>Resend code</Text>
               </TouchableOpacity>
             </>
           )}
@@ -317,4 +470,7 @@ const styles = StyleSheet.create({
   btn:             { flexDirection: "row", gap: 8, borderRadius: 16, paddingVertical: 15, alignItems: "center", justifyContent: "center", marginTop: 22 },
   btnDisabled:     { opacity: 0.7 },
   btnText:         { color: "#1A120B", fontSize: 14, fontWeight: "800" },
+  hint:            { fontSize: 12, marginTop: 4 },
+  resendBtn:       { alignItems: "center", marginTop: 14 },
+  resendText:      { fontSize: 13, fontWeight: "700" },
 });

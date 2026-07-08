@@ -17,6 +17,12 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
+import {
+  GoogleSignin,
+  statusCodes,
+  isErrorWithCode,
+  isSuccessResponse,
+} from "@react-native-google-signin/google-signin";
 
 const BASE_URL = "https://life-os-backend-1ozl.onrender.com/api";
 
@@ -37,16 +43,109 @@ const T = {
   borderFocused: "#FF8A3D",
 };
 
+// ─── Google Sign-In Configuration ───────────────────────────────────────────
+// Replace with your actual Web Client ID from Google Cloud Console.
+GoogleSignin.configure({
+  webClientId:
+    "260015412456-k4nkvjb1hd0mabk5g362otqg3818l6nt.apps.googleusercontent.com",
+  offlineAccess: true,
+});
+
+// Small helper so every error path prints a fully serialized, readable object
+// to the console (Metro/dev-tools) instead of "[object Object]" or a crash.
+const dumpError = (label: string, err: any) => {
+  try {
+    if (err === null || err === undefined) {
+      console.error(`\n[${label}] ------------------------------`);
+      console.error(`[${label}] Received a null/undefined error (no details available).`);
+      console.error(`[${label}] ------------------------------\n`);
+      return;
+    }
+    const safe = {
+      message: err?.message,
+      name: err?.name,
+      code: err?.code,
+      isAxiosError: err?.isAxiosError,
+      response_status: err?.response?.status,
+      response_data: err?.response?.data,
+      response_headers: err?.response?.headers,
+      request_present: !!err?.request,
+      config_url: err?.config?.url,
+      config_method: err?.config?.method,
+      stack: err?.stack,
+    };
+    console.error(`\n[${label}] ------------------------------`);
+    console.error(JSON.stringify(safe, null, 2));
+    console.error(`[${label}] ------------------------------\n`);
+  } catch (e) {
+    console.error(`[${label}] (failed to serialize error)`, err);
+  }
+};
+
+// Helper: pull a profile picture URL out of a backend response regardless of
+// whether it comes back camelCase ("profilePicture") or snake_case straight
+// from the `profile_picture` DB column ("profile_picture"). Falls back to "".
+const extractProfilePicture = (data: any): string => {
+  return data?.profilePicture ?? data?.profile_picture ?? "";
+};
+
+// ─── /auth/me fetch + storage ───────────────────────────────────────────────
+// After we have an access token (from either email/password or Google login),
+// we hit GET /api/auth/me with that token to get the canonical user profile,
+// then persist everything EXCEPT the userId to AsyncStorage. The access
+// token itself is what we use going forward to re-fetch /me whenever needed,
+// so there's no need to keep the id around locally.
+type MeResponse = {
+  id?: number | string;
+  username?: string;
+  fullName?: string;
+  full_name?: string;
+  email?: string;
+  profilePicture?: string;
+  profile_picture?: string;
+  provider?: string;
+};
+
+const fetchMeAndStore = async (accessToken: string): Promise<MeResponse> => {
+  const meResponse = await axios.get(`${BASE_URL}/users/me`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    timeout: 15000,
+  });
+
+  const me: MeResponse = meResponse.data ?? {};
+
+  await AsyncStorage.multiSet([
+    ["token", accessToken],
+    ["username", me.username ?? ""],
+    ["fullName", me.fullName ?? me.full_name ?? ""],
+    ["email", me.email ?? ""],
+    ["profilePicture", me.profilePicture ?? me.profile_picture ?? ""],
+    ["provider", me.provider ?? ""],
+    ["theme", "dark"],
+  ]);
+  console.log("accessToken and profile stored in AsyncStorage:", {
+    accessToken,
+    username: me.username,
+    fullName: me.fullName,
+    email: me.email,
+    profilePicture: me.profilePicture,
+    provider: me.provider,
+  });
+  return me;
+};
+
 export default function Login() {
   const [usernameOrEmail, setUsernameOrEmail] = useState("");
   const [password, setPassword] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(18)).current;
   const logoScale = useRef(new Animated.Value(0.85)).current;
+  const googleButtonScale = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.parallel([
@@ -56,6 +155,25 @@ export default function Login() {
     ]).start();
   }, [fadeAnim, slideAnim, logoScale]);
 
+  const animateGooglePressIn = () => {
+    Animated.spring(googleButtonScale, {
+      toValue: 0.97,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 6,
+    }).start();
+  };
+
+  const animateGooglePressOut = () => {
+    Animated.spring(googleButtonScale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 6,
+    }).start();
+  };
+
+  // ─── Email / Password Login ─────────────────────────────────────────────
   const login = async () => {
     if (!usernameOrEmail.trim() || !password.trim()) {
       Alert.alert("Error", "Please enter username/email and password.");
@@ -64,39 +182,212 @@ export default function Login() {
 
     try {
       setLoading(true);
-      const response = await axios.post(`${BASE_URL}/auth/login`, {
-        usernameOrEmail,
-        password,
-      });
+      const response = await axios.post(
+        `${BASE_URL}/auth/login`,
+        { usernameOrEmail, password },
+        { timeout: 15000 }
+      );
 
       const data = response.data;
+      console.log(data);
 
-      await AsyncStorage.multiSet([
-        ["token", data.accessToken],
-        ["userId", data.userId],
-        ["username", data.username],
-        ["fullName", data.fullName],
-        ["email", data.email],
-        ["theme", "dark"],
-      ]);
+      if (!data?.accessToken) {
+        Alert.alert("Login Failed", "Server did not return an access token.");
+        return;
+      }
 
-      Alert.alert("Login Successful", `Welcome ${data.fullName}`, [
+      let me: MeResponse = {};
+      try {
+        me = await fetchMeAndStore(data.accessToken);
+      } catch (meError: any) {
+        dumpError("Fetch /users/me Error (login)", meError);
+        Alert.alert(
+          "Login Failed",
+          "Signed in, but couldn't load your profile. Please try again."
+        );
+        return;
+      }
+
+      Alert.alert("Login Successful", `Welcome ${me.fullName ?? me.full_name ?? ""}`, [
         {
           text: "OK",
           onPress: () => router.replace("/(tabs)/dashboard"),
         },
       ]);
     } catch (error: any) {
-      if (error.response) {
+      dumpError("Login Error", error);
+
+      if (!error) {
+        Alert.alert("Unexpected Error", "An unknown error occurred. Please try again.");
+      } else if (error?.response) {
+        // Server responded with a non-2xx status
+        const status = error.response.status;
+        const serverMsg =
+          error.response.data?.message ||
+          (typeof error.response.data === "string"
+            ? error.response.data
+            : JSON.stringify(error.response.data));
         Alert.alert(
-          "Login Failed",
-          error.response.data?.message || "Invalid username/email or password."
+          `Login Failed (${status})`,
+          serverMsg || "Invalid username/email or password."
+        );
+      } else if (error?.request) {
+        // Request was made but no response received
+        Alert.alert(
+          "Network Error",
+          `No response from server.\nURL: ${BASE_URL}/auth/login\n${error?.message ?? "Unknown network error"}`
         );
       } else {
-        Alert.alert("Network Error", "Unable to connect to the server.");
+        // Something else went wrong setting up the request
+        Alert.alert("Unexpected Error", error?.message || "An unknown error occurred.");
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ─── Google Sign-In Handler ────────────────────────────────────────────
+  const handleGoogleLogin = async () => {
+    if (googleLoading || loading) return;
+
+    try {
+      setGoogleLoading(true);
+
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+
+      // Clear any cached Google session first. Without this, signIn() will
+      // silently reuse the last-used account instead of showing the account
+      // picker — which is exactly the "always logs into the same account"
+      // behavior we want to avoid.
+      try {
+        await GoogleSignin.signOut();
+      } catch (signOutErr) {
+        // Safe to ignore — this just means there was no active session to
+        // clear (e.g. very first sign-in ever on this device).
+        console.log("[Google Sign-In] signOut before signIn skipped:", signOutErr);
+      }
+
+      const response = await GoogleSignin.signIn();
+      console.log("[Google Sign-In] Raw response:", JSON.stringify(response, null, 2));
+
+      if (!isSuccessResponse(response)) {
+        // User cancelled the sign-in flow.
+        console.log("[Google Sign-In] Not a success response (likely cancelled).");
+        setGoogleLoading(false);
+        return;
+      }
+
+      const idToken = response.data?.idToken;
+
+      if (!idToken) {
+        console.error(
+          "[Google Sign-In] No ID token received. Full response:",
+          JSON.stringify(response, null, 2)
+        );
+        Alert.alert(
+          "Google Sign-In Failed",
+          "No ID token was returned by Google. This usually means webClientId in GoogleSignin.configure() is not a 'Web application' OAuth client ID, or it doesn't match the backend's expected audience."
+        );
+        setGoogleLoading(false);
+        return;
+      }
+
+      console.log("[Google Sign-In] Got idToken, length:", idToken.length);
+
+      // Isolate the backend call so we know for certain whether the failure
+      // is Google's SDK or our own server rejecting the token.
+      let backendResponse;
+      try {
+        backendResponse = await axios.post(
+          `${BASE_URL}/auth/google/login`,
+          { idToken },
+          { timeout: 15000 }
+        );
+      } catch (backendErr: any) {
+        dumpError("Google Backend Call Error", backendErr);
+        throw backendErr; // handled by outer catch below
+      }
+
+      const data = backendResponse.data;
+
+      if (!data?.accessToken) {
+        Alert.alert("Google Sign-In Failed", "Server did not return an access token.");
+        return;
+      }
+
+      let me: MeResponse = {};
+      try {
+        me = await fetchMeAndStore(data.accessToken);
+      } catch (meError: any) {
+        dumpError("Fetch /auth/me Error (google login)", meError);
+        Alert.alert(
+          "Google Sign-In Failed",
+          "Signed in, but couldn't load your profile. Please try again."
+        );
+        return;
+      }
+
+      Alert.alert("Login Successful", `Welcome ${me.fullName ?? me.full_name ?? ""}`, [
+        {
+          text: "OK",
+          onPress: () => router.replace("/(tabs)/dashboard"),
+        },
+      ]);
+    } catch (error: any) {
+      dumpError("Google Login Error", error);
+
+      if (!error) {
+        // Some native rejections come back with no error object at all.
+        Alert.alert(
+          "Google Sign-In Failed",
+          "An unknown error occurred (no error details were provided). Please try again."
+        );
+      } else if (isErrorWithCode(error)) {
+        // Native Google Sign-In SDK error
+        switch (error.code) {
+          case statusCodes.SIGN_IN_CANCELLED:
+            console.log("[Google Sign-In] User cancelled.");
+            break;
+          case statusCodes.IN_PROGRESS:
+            Alert.alert("Please Wait", "A sign-in attempt is already in progress.");
+            break;
+          case statusCodes.PLAY_SERVICES_NOT_AVAILABLE:
+            Alert.alert(
+              "Google Play Services Unavailable",
+              "Please update Google Play Services and try again."
+            );
+            break;
+          default:
+            Alert.alert(
+              "Google Sign-In Failed",
+              `Native error code: ${error.code}\nMessage: ${error?.message || "unknown"}\n\n` +
+                `If this is code 10 (DEVELOPER_ERROR), your app's SHA-1 fingerprint or package name ` +
+                `is not correctly registered against the Android OAuth client in Google Cloud Console.`
+            );
+            break;
+        }
+      } else if (error?.response) {
+        // Backend rejected the idToken or request
+        const status = error.response.status;
+        const serverMsg =
+          error.response.data?.message ||
+          (typeof error.response.data === "string"
+            ? error.response.data
+            : JSON.stringify(error.response.data));
+        Alert.alert(
+          `Google Login Failed (${status})`,
+          serverMsg || "Invalid or expired Google token."
+        );
+      } else if (error?.request) {
+        Alert.alert(
+          "Network Error",
+          `No response from server.\nURL: ${BASE_URL}/auth/google/login\n${error?.message ?? "Unknown network error"}`
+        );
+      } else {
+        Alert.alert("Google Sign-In Failed", error?.message || "An unknown error occurred.");
+      }
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -238,6 +529,38 @@ export default function Login() {
                     )}
                   </LinearGradient>
                 </TouchableOpacity>
+
+                {/* Divider */}
+                <View style={styles.dividerRow}>
+                  <View style={styles.dividerLine} />
+                  <Text style={styles.dividerText}>OR</Text>
+                  <View style={styles.dividerLine} />
+                </View>
+
+                {/* Google Sign-In Button */}
+                <Animated.View style={{ transform: [{ scale: googleButtonScale }] }}>
+                  <TouchableOpacity
+                    style={styles.googleButtonOuter}
+                    activeOpacity={0.85}
+                    onPress={handleGoogleLogin}
+                    onPressIn={animateGooglePressIn}
+                    onPressOut={animateGooglePressOut}
+                    disabled={googleLoading || loading}
+                  >
+                    <View style={styles.googleButton}>
+                      {googleLoading ? (
+                        <ActivityIndicator color={T.accent} />
+                      ) : (
+                        <>
+                          <View style={styles.googleIconWrap}>
+                            <Feather name="chrome" size={16} color={T.accent} />
+                          </View>
+                          <Text style={styles.googleButtonText}>Continue with Google</Text>
+                        </>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                </Animated.View>
               </View>
             </View>
 
@@ -404,6 +727,53 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.2,
     marginRight: 8,
+  },
+  dividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 22,
+    marginBottom: 18,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: T.border,
+  },
+  dividerText: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 1,
+    color: T.textFaint,
+    marginHorizontal: 12,
+  },
+  googleButtonOuter: {
+    borderRadius: 18,
+    overflow: "hidden",
+  },
+  googleButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 15,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: T.border,
+    backgroundColor: T.surfaceAlt,
+  },
+  googleIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+    backgroundColor: "rgba(255, 138, 61, 0.12)",
+  },
+  googleButtonText: {
+    color: T.textPrimary,
+    fontSize: 15,
+    fontWeight: "700",
+    letterSpacing: 0.1,
   },
   signupContainer: {
     flexDirection: "row",
