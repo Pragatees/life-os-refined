@@ -76,7 +76,8 @@ const MENU_ITEMS: {
 }[] = [
   { label: "Profile", path: "/profile", icon: "person-outline" },
   { label: "Dashboard", path: "/dashboard", icon: "grid-outline" },
-  { label: "Account Settings", path: "/settings", icon: "settings-outline" },
+  { label: "Progress", path: "/HistoryScreen", icon: "bar-chart-outline" },
+  { label: "Account Settings", path: "/settings", icon: "settings-outline" }
 ];
 
 const getInitials = (name: string) => {

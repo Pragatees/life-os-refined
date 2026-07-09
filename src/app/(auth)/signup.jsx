@@ -13,8 +13,16 @@ import {
   Animated,
 } from "react-native";
 import { router } from "expo-router";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import axios from "axios";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
+import {
+  GoogleSignin,
+  statusCodes,
+  isErrorWithCode,
+  isSuccessResponse,
+} from "@react-native-google-signin/google-signin";
 
 const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
 
@@ -37,6 +45,15 @@ const T = {
   borderFocused: "#FF8A3D",
 };
 
+// ─── Google Sign-In Configuration ───────────────────────────────────────────
+// Same Web Client ID used on the login screen — must match so tokens issued
+// here are accepted by the same backend verification path.
+GoogleSignin.configure({
+  webClientId:
+    "260015412456-k4nkvjb1hd0mabk5g362otqg3818l6nt.apps.googleusercontent.com",
+  offlineAccess: true,
+});
+
 const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
 
 function getStrength(pwd) {
@@ -53,6 +70,92 @@ function getStrength(pwd) {
   return { width: 100, color: T.success, label: "Strong" };
 }
 
+// Small helper so every error path prints a fully serialized, readable object
+// to the console (Metro/dev-tools) instead of "[object Object]" or a crash.
+// Dev-facing only — nothing here is ever shown to the user.
+const dumpError = (label, err) => {
+  try {
+    if (err === null || err === undefined) {
+      console.error(`\n[${label}] ------------------------------`);
+      console.error(`[${label}] Received a null/undefined error (no details available).`);
+      console.error(`[${label}] ------------------------------\n`);
+      return;
+    }
+    const safe = {
+      message: err?.message,
+      name: err?.name,
+      code: err?.code,
+      isAxiosError: err?.isAxiosError,
+      response_status: err?.response?.status,
+      response_data: err?.response?.data,
+      response_headers: err?.response?.headers,
+      request_present: !!err?.request,
+      config_url: err?.config?.url,
+      config_method: err?.config?.method,
+      stack: err?.stack,
+    };
+    console.error(`\n[${label}] ------------------------------`);
+    console.error(JSON.stringify(safe, null, 2));
+    console.error(`[${label}] ------------------------------\n`);
+  } catch (e) {
+    console.error(`[${label}] (failed to serialize error)`, err);
+  }
+};
+
+// ─── /users/me fetch + storage ──────────────────────────────────────────────
+// After we have an access token from Google, hit GET /api/users/me with it
+// to get the canonical user profile, then persist everything to
+// AsyncStorage exactly the way login.tsx does, so both entry points leave
+// the app in the same state.
+const fetchMeAndStore = async (accessToken) => {
+  const meResponse = await axios.get(`${API_URL}/users/me`, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    timeout: 15000,
+  });
+
+  const me = meResponse.data ?? {};
+
+  await AsyncStorage.multiSet([
+    ["token", accessToken],
+    ["username", me.username ?? ""],
+    ["fullName", me.fullName ?? me.full_name ?? ""],
+    ["email", me.email ?? ""],
+    ["profilePicture", me.profilePicture ?? me.profile_picture ?? ""],
+    ["provider", me.provider ?? ""],
+    ["theme", "dark"],
+  ]);
+  console.log("accessToken and profile stored in AsyncStorage:", {
+    accessToken,
+    username: me.username,
+    fullName: me.fullName,
+    email: me.email,
+    profilePicture: me.profilePicture,
+    provider: me.provider,
+  });
+  return me;
+};
+
+/** Turns a caught axios/native error into a short, user-safe status line. */
+const describeSignUpError = (error, url) => {
+  if (!error) {
+    return "An unknown error occurred. Please try again.";
+  }
+  if (error?.code === "ERR_NETWORK") {
+    return `Network error reaching ${url}. Check your connection.`;
+  }
+  if (error?.response) {
+    const status = error.response.status;
+    const serverMsg =
+      error.response.data?.message ||
+      (typeof error.response.data === "string" ? error.response.data : "");
+    return `Server error (${status}) at ${url}${serverMsg ? ` — ${serverMsg}` : "."}`;
+  }
+  if (error?.request) {
+    return `No response from ${url}. Please check your connection.`;
+  }
+  return error?.message || "An unknown error occurred. Please try again.";
+};
+
 export default function SignUp() {
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
@@ -60,6 +163,7 @@ export default function SignUp() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
   const [errors, setErrors] = useState({});
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
@@ -68,6 +172,7 @@ export default function SignUp() {
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(18)).current;
   const logoScale = useRef(new Animated.Value(0.85)).current;
+  const googleButtonScale = useRef(new Animated.Value(1)).current;
 
   useEffect(() => {
     Animated.parallel([
@@ -95,6 +200,25 @@ export default function SignUp() {
     return Object.keys(e).length === 0;
   };
 
+  const animateGooglePressIn = () => {
+    Animated.spring(googleButtonScale, {
+      toValue: 0.97,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 6,
+    }).start();
+  };
+
+  const animateGooglePressOut = () => {
+    Animated.spring(googleButtonScale, {
+      toValue: 1,
+      useNativeDriver: true,
+      speed: 20,
+      bounciness: 6,
+    }).start();
+  };
+
+  // ─── Email / Password Sign Up ───────────────────────────────────────────
   const handleSignUp = async () => {
     if (!validate()) return;
     try {
@@ -121,6 +245,103 @@ export default function SignUp() {
       Alert.alert("Network Error", "Unable to connect to the server.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  // ─── Google Sign-Up Handler ──────────────────────────────────────────────
+  // Uses the same backend endpoint as login (/auth/google/login) since a
+  // Google account is created on first use and simply logged in thereafter.
+  const handleGoogleSignUp = async () => {
+    if (googleLoading || loading) return;
+
+    try {
+      setGoogleLoading(true);
+
+      await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
+
+      // Clear any cached Google session first so the account picker always
+      // shows, instead of silently reusing the last signed-in account.
+      try {
+        await GoogleSignin.signOut();
+      } catch (signOutErr) {
+        console.log("[Google Sign-In] signOut before signIn skipped:", signOutErr);
+      }
+
+      const response = await GoogleSignin.signIn();
+      console.log("[Google Sign-In] Raw response:", JSON.stringify(response, null, 2));
+
+      if (!isSuccessResponse(response)) {
+        // User cancelled the sign-in flow — not a failure.
+        console.log("[Google Sign-In] Not a success response (likely cancelled).");
+        setGoogleLoading(false);
+        return;
+      }
+
+      const idToken = response.data?.idToken;
+
+      if (!idToken) {
+        console.error(
+          "[Google Sign-In] No ID token received. Full response:",
+          JSON.stringify(response, null, 2)
+        );
+        Alert.alert("Sign Up Failed", "Google didn't return an ID token. Please try again.");
+        setGoogleLoading(false);
+        return;
+      }
+
+      console.log("[Google Sign-In] Got idToken, length:", idToken.length);
+
+      // Isolate the backend call so we know for certain whether the failure
+      // is Google's SDK or our own server rejecting the token.
+      let backendResponse;
+      try {
+        backendResponse = await axios.post(
+          `${API_URL}/auth/google/login`,
+          { idToken },
+          { timeout: 15000 }
+        );
+      } catch (backendErr) {
+        dumpError("Google Backend Call Error", backendErr);
+        throw backendErr; // handled by outer catch below
+      }
+
+      const data = backendResponse.data;
+
+      if (!data?.accessToken) {
+        Alert.alert("Sign Up Failed", "Server did not return an access token.");
+        return;
+      }
+
+      let me = {};
+      try {
+        me = await fetchMeAndStore(data.accessToken);
+      } catch (meError) {
+        dumpError("Fetch /users/me Error (google signup)", meError);
+        Alert.alert("Sign Up Failed", "Signed in, but couldn't load your profile.");
+        return;
+      }
+
+      Alert.alert("Account Created", `Welcome ${me.fullName ?? me.full_name ?? ""}`, [
+        {
+          text: "OK",
+          onPress: () => router.replace("/(tabs)/dashboard"),
+        },
+      ]);
+    } catch (error) {
+      dumpError("Google Sign Up Error", error);
+
+      if (isErrorWithCode(error) && error.code === statusCodes.SIGN_IN_CANCELLED) {
+        console.log("[Google Sign-In] User cancelled.");
+      } else if (isErrorWithCode(error) && error.code === statusCodes.IN_PROGRESS) {
+        Alert.alert("Sign Up Failed", "A sign-in attempt is already in progress.");
+      } else if (isErrorWithCode(error) && error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
+        Alert.alert("Sign Up Failed", "Google Play Services unavailable. Please update and try again.");
+      } else {
+        const reason = describeSignUpError(error, `${API_URL}/auth/google/login`);
+        Alert.alert("Sign Up Failed", reason);
+      }
+    } finally {
+      setGoogleLoading(false);
     }
   };
 
@@ -159,7 +380,7 @@ export default function SignUp() {
             keyboardType={keyboardType ?? "default"}
             secureTextEntry={secure ? !secureVisible : false}
             value={value}
-            editable={!loading}
+            editable={!loading && !googleLoading}
             onChangeText={(t) => {
               onChangeText(t);
               clearError(field);
@@ -305,7 +526,7 @@ export default function SignUp() {
                   style={styles.buttonOuter}
                   activeOpacity={0.85}
                   onPress={handleSignUp}
-                  disabled={loading}
+                  disabled={loading || googleLoading}
                 >
                   <LinearGradient
                     colors={loading ? ["#4A3A28", "#4A3A28"] : T.accentGradient}
@@ -323,13 +544,45 @@ export default function SignUp() {
                     )}
                   </LinearGradient>
                 </TouchableOpacity>
+
+                {/* Divider */}
+                <View style={styles.dividerRow}>
+                  <View style={styles.dividerLine} />
+                  <Text style={styles.dividerText}>OR</Text>
+                  <View style={styles.dividerLine} />
+                </View>
+
+                {/* Google Sign-Up Button */}
+                <Animated.View style={{ transform: [{ scale: googleButtonScale }] }}>
+                  <TouchableOpacity
+                    style={styles.googleButtonOuter}
+                    activeOpacity={0.85}
+                    onPress={handleGoogleSignUp}
+                    onPressIn={animateGooglePressIn}
+                    onPressOut={animateGooglePressOut}
+                    disabled={googleLoading || loading}
+                  >
+                    <View style={styles.googleButton}>
+                      {googleLoading ? (
+                        <ActivityIndicator color={T.accent} />
+                      ) : (
+                        <>
+                          <View style={styles.googleIconWrap}>
+                            <Feather name="chrome" size={16} color={T.accent} />
+                          </View>
+                          <Text style={styles.googleButtonText}>Sign up with Google</Text>
+                        </>
+                      )}
+                    </View>
+                  </TouchableOpacity>
+                </Animated.View>
               </View>
             </View>
 
             {/* Sign in link */}
             <View style={styles.signupContainer}>
               <Text style={styles.signupPrompt}>Already have an account? </Text>
-              <TouchableOpacity onPress={() => router.replace("/login")} disabled={loading} hitSlop={8}>
+              <TouchableOpacity onPress={() => router.replace("/login")} disabled={loading || googleLoading} hitSlop={8}>
                 <Text style={styles.signupLink}>Sign in</Text>
               </TouchableOpacity>
             </View>
@@ -532,6 +785,53 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: 0.2,
     marginRight: 8,
+  },
+  dividerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 22,
+    marginBottom: 18,
+  },
+  dividerLine: {
+    flex: 1,
+    height: 1,
+    backgroundColor: T.border,
+  },
+  dividerText: {
+    fontSize: 11,
+    fontWeight: "700",
+    letterSpacing: 1,
+    color: T.textFaint,
+    marginHorizontal: 12,
+  },
+  googleButtonOuter: {
+    borderRadius: 18,
+    overflow: "hidden",
+  },
+  googleButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 15,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: T.border,
+    backgroundColor: T.surfaceAlt,
+  },
+  googleIconWrap: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    marginRight: 10,
+    backgroundColor: "rgba(255, 138, 61, 0.12)",
+  },
+  googleButtonText: {
+    color: T.textPrimary,
+    fontSize: 15,
+    fontWeight: "700",
+    letterSpacing: 0.1,
   },
   signupContainer: {
     flexDirection: "row",
