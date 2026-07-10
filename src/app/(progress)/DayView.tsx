@@ -11,12 +11,11 @@ import {
 
 import { Ionicons } from "@expo/vector-icons";
 
-import { DailyProgress, Task } from "../../types/task";
+import { Task } from "../../types/task";
+import { useProgressStore } from "../../store/progress";
 
 interface DayViewProps {
   date: string;
-  tasks: Task[];
-  progress: DailyProgress;
   theme?: "dark" | "bright";
 }
 
@@ -61,42 +60,60 @@ const BRIGHT: ThemeColors = {
 
 export default function DayView({
   date,
-  tasks,
-  progress,
   theme = "dark",
 }: DayViewProps) {
   const C = theme === "dark" ? DARK : BRIGHT;
 
-  /**
-   * Sort tasks by time.
-   *
-   * Example:
-   * 06:00
-   * 09:30
-   * 14:00
-   * 18:30
-   */
+  // NOTE: DayView no longer fetches data itself.
+  // Fetching is owned exclusively by ProgressScreen via
+  // useProgressStore.getState().initializeProgress().
+  // This component only reads from the store.
+  const {
+    dailyTasks,
+    dailyProgress,
+    loading,
+    error,
+    fetchDailyProgress, // still exposed for manual retry, not auto-called
+  } = useProgressStore();
+
+  const dayTasks = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    if (date === today) {
+      return dailyTasks;
+    }
+    return dailyTasks.filter((task) => task.taskDate === date);
+  }, [dailyTasks, date]);
+
   const sortedTasks = useMemo(() => {
-    return [...tasks].sort((a, b) => {
+    return [...dayTasks].sort((a, b) => {
       return a.taskTime.localeCompare(b.taskTime);
     });
-  }, [tasks]);
+  }, [dayTasks]);
 
-  /**
-   * Progress Width
-   */
-  const progressWidth = useMemo(() => {
-    return `${progress.percentage}%`;
-  }, [progress]);
+  const dayProgressData = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    if (date === today) {
+      return {
+        total: dailyProgress.totalTasks,
+        completed: dailyProgress.completedTasks,
+        pending: dailyProgress.pendingTasks,
+        completionRate: dailyProgress.completionRate,
+      };
+    }
+    const total = dayTasks.length;
+    const completed = dayTasks.filter((task) => task.completed).length;
+    const pending = total - completed;
+    const percentage = total === 0 ? 0 : Math.round((completed / total) * 100);
+    return {
+      total,
+      completed,
+      pending,
+      completionRate: percentage,
+    };
+  }, [dayTasks, dailyProgress, date]);
 
-  /**
-   * Empty Day
-   */
   const isEmpty = sortedTasks.length === 0;
 
-  /**
-   * Priority Color
-   */
   const getPriorityColor = (priority: string) => {
     switch (priority) {
       case "HIGH":
@@ -110,9 +127,18 @@ export default function DayView({
     }
   };
 
-  /**
-   * Render Single Task
-   */
+  const formatDate = (dateString: string) => {
+    const [year, month, day] = dateString.split('-').map(Number);
+    const dateObj = new Date(Date.UTC(year, month - 1, day));
+    return dateObj.toLocaleDateString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      timeZone: "UTC",
+    });
+  };
+
   const renderTask = ({ item }: { item: Task }) => {
     return (
       <View
@@ -188,6 +214,82 @@ export default function DayView({
     );
   };
 
+  if (loading) {
+    return (
+      <View
+        style={[
+          styles.container,
+          {
+            backgroundColor: C.background,
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.progressCard,
+            {
+              backgroundColor: C.surface,
+              borderColor: C.border,
+            },
+          ]}
+        >
+          <Text style={[styles.date, { color: C.text }]}>
+            {formatDate(date)}
+          </Text>
+          <View style={styles.loadingContainer}>
+            <Text style={[styles.loadingText, { color: C.secondary }]}>
+              Loading tasks...
+            </Text>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
+  if (error) {
+    return (
+      <View
+        style={[
+          styles.container,
+          {
+            backgroundColor: C.background,
+          },
+        ]}
+      >
+        <View
+          style={[
+            styles.progressCard,
+            {
+              backgroundColor: C.surface,
+              borderColor: C.border,
+            },
+          ]}
+        >
+          <Text style={[styles.date, { color: C.text }]}>
+            {formatDate(date)}
+          </Text>
+          <View style={styles.errorContainer}>
+            <Ionicons name="alert-circle-outline" size={40} color={C.high} />
+            <Text style={[styles.errorText, { color: C.high }]}>
+              {error}
+            </Text>
+            <TouchableOpacity
+              style={[
+                styles.retryButton,
+                {
+                  backgroundColor: C.accent,
+                },
+              ]}
+              onPress={() => fetchDailyProgress(true)}
+            >
+              <Text style={styles.retryText}>Retry</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View
       style={[
@@ -197,7 +299,6 @@ export default function DayView({
         },
       ]}
     >
-      {/* Progress Card */}
       <View
         style={[
           styles.progressCard,
@@ -215,13 +316,13 @@ export default function DayView({
             },
           ]}
         >
-          {date}
+          {formatDate(date)}
         </Text>
 
         <View style={styles.statsRow}>
           <View style={styles.statItem}>
             <Text style={[styles.statValue, { color: C.text }]}>
-              {progress.total}
+              {dayProgressData.total}
             </Text>
 
             <Text style={[styles.statLabel, { color: C.secondary }]}>
@@ -231,7 +332,7 @@ export default function DayView({
 
           <View style={styles.statItem}>
             <Text style={[styles.statValue, { color: C.success }]}>
-              {progress.completed}
+              {dayProgressData.completed}
             </Text>
 
             <Text style={[styles.statLabel, { color: C.secondary }]}>
@@ -241,7 +342,7 @@ export default function DayView({
 
           <View style={styles.statItem}>
             <Text style={[styles.statValue, { color: C.high }]}>
-              {progress.pending}
+              {dayProgressData.pending}
             </Text>
 
             <Text style={[styles.statLabel, { color: C.secondary }]}>
@@ -255,8 +356,7 @@ export default function DayView({
             style={[
               styles.progressFill,
               {
-                // cast to any to satisfy TypeScript DimensionValue typing for percentage strings
-                width: (`${progress.percentage}%`) as any,
+                width: `${dayProgressData.completionRate}%`,
                 backgroundColor: C.accent,
               },
             ]}
@@ -271,11 +371,10 @@ export default function DayView({
             },
           ]}
         >
-          {progress.percentage}% Completed
+          {dayProgressData.completionRate}% Completed
         </Text>
       </View>
 
-      {/* Empty State */}
       {isEmpty ? (
         <View style={styles.emptyContainer}>
           <Ionicons name="calendar-outline" size={60} color={C.secondary} />
@@ -305,7 +404,7 @@ export default function DayView({
       ) : (
         <FlatList
           data={sortedTasks}
-          keyExtractor={(item) => item.id}
+          keyExtractor={(item) => item.id.toString()}
           renderItem={renderTask}
           contentContainerStyle={{
             paddingBottom: 80,
@@ -449,5 +548,37 @@ const styles = StyleSheet.create({
     color: "#FFF",
     fontSize: 10,
     fontWeight: "700",
+  },
+
+  loadingContainer: {
+    padding: 20,
+    alignItems: "center",
+  },
+
+  loadingText: {
+    fontSize: 16,
+  },
+
+  errorContainer: {
+    padding: 20,
+    alignItems: "center",
+  },
+
+  errorText: {
+    fontSize: 16,
+    marginTop: 10,
+    textAlign: "center",
+  },
+
+  retryButton: {
+    marginTop: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+
+  retryText: {
+    color: "#FFF",
+    fontWeight: "600",
   },
 });

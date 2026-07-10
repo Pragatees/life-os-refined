@@ -74,9 +74,12 @@ const MENU_ITEMS: {
   path: string;
   icon: keyof typeof Ionicons.glyphMap;
 }[] = [
-  { label: "Profile", path: "/profile", icon: "person-outline" },
-  { label: "Dashboard", path: "/dashboard", icon: "grid-outline" },
+  { label: "Manage Tasks", path: "/dashboard", icon: "grid-outline" },
+  { label: "Daily Journal", path: "/NotesScreen", icon: "book-outline" },
+  { label: "Goals", path: "/GoalScreen", icon: "briefcase-outline" },
   { label: "Progress", path: "/HistoryScreen", icon: "bar-chart-outline" },
+  { label: "AI Review", path: "/ai_review", icon: "logo-android" },
+  { label: "Profile", path: "/profile", icon: "person-outline" },
   { label: "Account Settings", path: "/settings", icon: "settings-outline" }
 ];
 
