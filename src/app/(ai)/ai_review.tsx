@@ -43,7 +43,7 @@ import MonthReview from "./month_review";
 // the Bearer token you already use elsewhere. Left here as a placeholder
 // only so the component compiles standalone.
 // ─────────────────────────────────────────────────────────────────────────
-const GEMINI_API_KEY = "AQ.Ab8RN6K6K9k1N8TeoDm1DT1gUSf4xw6-eArdY-HqQ-yT2mzgWw";
+const GEMINI_API_KEY = "";
 export const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 export const getToken = (): Promise<string | null> =>
