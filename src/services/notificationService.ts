@@ -31,6 +31,9 @@
 //    needed to change — isKnownTaskNotifType already matches "reminder*" and
 //    "overdue_*" by prefix, so the new reminder_15 / reminder_5 types are
 //    recognized by the delivery listener with zero changes there.
+// 4. ADDED: Two new daily reminder notifications:
+//    - 8:00 PM: "Add your intention memories to Notes"
+//    - 9:00 PM: "Check your daily progress and review with your AI companion"
 // ─────────────────────────────────────────────────────────────────────────────
 
 import * as Notifications from "expo-notifications";
@@ -99,6 +102,12 @@ const SUMMARY_MINUTE = 0;
 const MIDNIGHT_HOUR = 0;   // 12:01 AM new-day reset
 const MIDNIGHT_MINUTE = 1;
 
+// ─── New daily reminder times ────────────────────────────────────────────────
+const INTENTION_MEMORIES_HOUR = 20; // 8:00 PM
+const INTENTION_MEMORIES_MINUTE = 0;
+const AI_REVIEW_HOUR = 21; // 9:00 PM
+const AI_REVIEW_MINUTE = 0;
+
 const MAX_TASK_NOTIFICATIONS = 50;
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
@@ -107,6 +116,8 @@ const KEY_EVENING = "notif_evening";
 const KEY_SUMMARY = "notif_summary";
 const KEY_MIDNIGHT_RESET = "notif_midnight_reset";
 const KEY_ACTIVE_TASK_IDS = "notif_active_task_ids";
+const KEY_INTENTION_MEMORIES = "notif_intention_memories";
+const KEY_AI_REVIEW = "notif_ai_review";
 // Same key the Settings screen writes to — single source of truth for the
 // user's in-app on/off preference (separate from OS-level permission).
 const KEY_NOTIFICATIONS_ENABLED = "notificationsEnabled";
@@ -377,6 +388,38 @@ export const scheduleEveningReview = async (): Promise<void> => {
     { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour: EVENING_HOUR, minute: EVENING_MINUTE }
   );
   log.info("Evening notification scheduled");
+};
+
+// ─── 5.5 Intention Memories — 8:00 PM daily ──────────────────────────────────
+
+export const scheduleIntentionMemories = async (): Promise<void> => {
+  await scheduleAndStore(
+    KEY_INTENTION_MEMORIES,
+    { 
+      title: "📝 Intention Memories", 
+      body: "Add your intention memories to Notes",
+      sound: true,
+      data: { type: "intention_memories" }
+    },
+    { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour: INTENTION_MEMORIES_HOUR, minute: INTENTION_MEMORIES_MINUTE }
+  );
+  log.info("Intention memories notification scheduled for 8:00 PM");
+};
+
+// ─── 5.6 AI Review — 9:00 PM daily ───────────────────────────────────────────
+
+export const scheduleAIReview = async (): Promise<void> => {
+  await scheduleAndStore(
+    KEY_AI_REVIEW,
+    { 
+      title: "🤖 AI Companion Review", 
+      body: "Check your daily progress and review with your AI companion",
+      sound: true,
+      data: { type: "ai_review" }
+    },
+    { type: Notifications.SchedulableTriggerInputTypes.DAILY, hour: AI_REVIEW_HOUR, minute: AI_REVIEW_MINUTE }
+  );
+  log.info("AI review notification scheduled for 9:00 PM");
 };
 
 // ─── 6. Daily Summary — 9:00 PM daily ─────────────────────────────────────────
@@ -871,6 +914,8 @@ export const rescheduleAllNotifications = async (tasks: Task[]): Promise<void> =
       ? [
           scheduleMorningNotification(),
           scheduleEveningReview(),
+          scheduleIntentionMemories(), // 8:00 PM - Intention Memories
+          scheduleAIReview(), // 9:00 PM - AI Companion Review
           scheduleDailySummary(tasks),
           scheduleMidnightReset(),
           scheduleEngagementNotifications(tasks),
