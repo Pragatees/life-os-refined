@@ -26,9 +26,7 @@ import {
 
 const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
 
-// ─── Theme Tokens (Claymorphism — same language as the rest of the app) ────
-// Near-black background, warm amber/orange accent, soft clay shadows.
-// No blue, purple, violet, or pink anywhere in the palette.
+// ─── Theme Tokens ───────────────────────────────────────────────────────────
 const T = {
   bg: ["#0A0A0B", "#141210", "#1C1712"],
   surface: "rgba(24, 24, 27, 0.85)",
@@ -46,8 +44,6 @@ const T = {
 };
 
 // ─── Google Sign-In Configuration ───────────────────────────────────────────
-// Same Web Client ID used on the login screen — must match so tokens issued
-// here are accepted by the same backend verification path.
 GoogleSignin.configure({
   webClientId:
     "260015412456-k4nkvjb1hd0mabk5g362otqg3818l6nt.apps.googleusercontent.com",
@@ -70,43 +66,7 @@ function getStrength(pwd) {
   return { width: 100, color: T.success, label: "Strong" };
 }
 
-// Small helper so every error path prints a fully serialized, readable object
-// to the console (Metro/dev-tools) instead of "[object Object]" or a crash.
-// Dev-facing only — nothing here is ever shown to the user.
-const dumpError = (label, err) => {
-  try {
-    if (err === null || err === undefined) {
-      console.error(`\n[${label}] ------------------------------`);
-      console.error(`[${label}] Received a null/undefined error (no details available).`);
-      console.error(`[${label}] ------------------------------\n`);
-      return;
-    }
-    const safe = {
-      message: err?.message,
-      name: err?.name,
-      code: err?.code,
-      isAxiosError: err?.isAxiosError,
-      response_status: err?.response?.status,
-      response_data: err?.response?.data,
-      response_headers: err?.response?.headers,
-      request_present: !!err?.request,
-      config_url: err?.config?.url,
-      config_method: err?.config?.method,
-      stack: err?.stack,
-    };
-    console.error(`\n[${label}] ------------------------------`);
-    console.error(JSON.stringify(safe, null, 2));
-    console.error(`[${label}] ------------------------------\n`);
-  } catch (e) {
-    console.error(`[${label}] (failed to serialize error)`, err);
-  }
-};
-
 // ─── /users/me fetch + storage ──────────────────────────────────────────────
-// After we have an access token from Google, hit GET /api/users/me with it
-// to get the canonical user profile, then persist everything to
-// AsyncStorage exactly the way login.tsx does, so both entry points leave
-// the app in the same state.
 const fetchMeAndStore = async (accessToken) => {
   const meResponse = await axios.get(`${API_URL}/users/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
@@ -124,36 +84,65 @@ const fetchMeAndStore = async (accessToken) => {
     ["provider", me.provider ?? ""],
     ["theme", "dark"],
   ]);
-  console.log("accessToken and profile stored in AsyncStorage:", {
-    accessToken,
-    username: me.username,
-    fullName: me.fullName,
-    email: me.email,
-    profilePicture: me.profilePicture,
-    provider: me.provider,
-  });
   return me;
 };
 
-/** Turns a caught axios/native error into a short, user-safe status line. */
-const describeSignUpError = (error, url) => {
+/** Check if error is due to invalid credentials or conflict */
+const isInvalidCredentialsError = (error) => {
+  if (!error) return false;
+  
+  // Check for 400, 401, 409 status (conflict, invalid, etc.)
+  if (error?.response?.status === 400 || 
+      error?.response?.status === 401 || 
+      error?.response?.status === 409) return true;
+  
+  // Check for specific message indicators
+  const message = error?.response?.data?.message || 
+                  (typeof error?.response?.data === "string" ? error.response.data : "") ||
+                  error?.message || "";
+  
+  return message.toLowerCase().includes("already exists") ||
+         message.toLowerCase().includes("taken") ||
+         message.toLowerCase().includes("invalid") ||
+         message.toLowerCase().includes("credentials") ||
+         message.toLowerCase().includes("incorrect") ||
+         message.toLowerCase().includes("not found") ||
+         message.toLowerCase().includes("exists");
+};
+
+/** Check if error is network-related */
+const isNetworkError = (error) => {
+  return error?.code === "ERR_NETWORK" || 
+         error?.code === "ECONNABORTED" ||
+         error?.message?.includes("network") ||
+         error?.message?.includes("timeout") ||
+         error?.code === "ETIMEDOUT";
+};
+
+/** Turns a caught axios/native error into a user-safe status line. */
+const describeSignUpError = (error) => {
   if (!error) {
-    return "An unknown error occurred. Please try again.";
+    return "An unknown error occurred. Please wait 1 minute and try again.";
   }
-  if (error?.code === "ERR_NETWORK") {
-    return `Network error reaching ${url}. Check your connection.`;
+  
+  // Check if it's an invalid credentials/conflict error first
+  if (isInvalidCredentialsError(error)) {
+    const status = error.response?.status;
+    const serverMsg = error.response?.data?.message ||
+                      (typeof error.response?.data === "string" ? error.response.data : "");
+    
+    if (status === 409) {
+      return serverMsg || "Username or email already exists.";
+    }
+    return serverMsg || "Invalid information provided.";
   }
-  if (error?.response) {
-    const status = error.response.status;
-    const serverMsg =
-      error.response.data?.message ||
-      (typeof error.response.data === "string" ? error.response.data : "");
-    return `Server error (${status}) at ${url}${serverMsg ? ` — ${serverMsg}` : "."}`;
+  
+  // For any other error (network, server down, DB issues, etc.) - generic message
+  if (isNetworkError(error)) {
+    return "Unable to connect to server. Please wait 1 minute and try again.";
   }
-  if (error?.request) {
-    return `No response from ${url}. Please check your connection.`;
-  }
-  return error?.message || "An unknown error occurred. Please try again.";
+  
+  return "Please wait 1 minute before trying again.";
 };
 
 export default function SignUp() {
@@ -221,36 +210,43 @@ export default function SignUp() {
   // ─── Email / Password Sign Up ───────────────────────────────────────────
   const handleSignUp = async () => {
     if (!validate()) return;
+    
     try {
       setLoading(true);
-      const res = await fetch(`${API_URL}/auth/signup`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const response = await axios.post(
+        `${API_URL}/auth/signup`,
+        {
           username: username.trim(),
           fullName: fullName.trim(),
           email: email.trim(),
           password,
-        }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        Alert.alert("Account Created", data.message || "You're all set.", [
-          { text: "Sign In", onPress: () => router.replace("/login") },
-        ]);
+        },
+        { timeout: 15000 }
+      );
+      
+      const data = response.data;
+      
+      Alert.alert("Account Created", data.message || "You're all set.", [
+        { text: "Sign In", onPress: () => router.replace("/login") },
+      ]);
+    } catch (error) {
+      // Check if this is an invalid credentials/conflict error
+      if (isInvalidCredentialsError(error)) {
+        const message = error?.response?.data?.message || 
+                        (typeof error?.response?.data === "string" ? error.response.data : "") ||
+                        "Username or email already exists.";
+        Alert.alert("Sign Up Failed", message);
       } else {
-        Alert.alert("Sign Up Failed", data.message || "Something went wrong.");
+        // Network or server error - show wait message
+        const message = describeSignUpError(error);
+        Alert.alert("Sign Up Failed", message);
       }
-    } catch {
-      Alert.alert("Network Error", "Unable to connect to the server.");
     } finally {
       setLoading(false);
     }
   };
 
   // ─── Google Sign-Up Handler ──────────────────────────────────────────────
-  // Uses the same backend endpoint as login (/auth/google/login) since a
-  // Google account is created on first use and simply logged in thereafter.
   const handleGoogleSignUp = async () => {
     if (googleLoading || loading) return;
 
@@ -259,20 +255,17 @@ export default function SignUp() {
 
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
 
-      // Clear any cached Google session first so the account picker always
-      // shows, instead of silently reusing the last signed-in account.
+      // Clear any cached Google session first
       try {
         await GoogleSignin.signOut();
       } catch (signOutErr) {
-        console.log("[Google Sign-In] signOut before signIn skipped:", signOutErr);
+        // Safe to ignore
       }
 
       const response = await GoogleSignin.signIn();
-      console.log("[Google Sign-In] Raw response:", JSON.stringify(response, null, 2));
 
       if (!isSuccessResponse(response)) {
-        // User cancelled the sign-in flow — not a failure.
-        console.log("[Google Sign-In] Not a success response (likely cancelled).");
+        // User cancelled the sign-in flow
         setGoogleLoading(false);
         return;
       }
@@ -280,19 +273,12 @@ export default function SignUp() {
       const idToken = response.data?.idToken;
 
       if (!idToken) {
-        console.error(
-          "[Google Sign-In] No ID token received. Full response:",
-          JSON.stringify(response, null, 2)
-        );
         Alert.alert("Sign Up Failed", "Google didn't return an ID token. Please try again.");
         setGoogleLoading(false);
         return;
       }
 
-      console.log("[Google Sign-In] Got idToken, length:", idToken.length);
-
-      // Isolate the backend call so we know for certain whether the failure
-      // is Google's SDK or our own server rejecting the token.
+      // Isolate the backend call
       let backendResponse;
       try {
         backendResponse = await axios.post(
@@ -301,14 +287,13 @@ export default function SignUp() {
           { timeout: 15000 }
         );
       } catch (backendErr) {
-        dumpError("Google Backend Call Error", backendErr);
-        throw backendErr; // handled by outer catch below
+        throw backendErr;
       }
 
       const data = backendResponse.data;
 
       if (!data?.accessToken) {
-        Alert.alert("Sign Up Failed", "Server did not return an access token.");
+        Alert.alert("Sign Up Failed", "Server did not return an access token. Please wait 1 minute and try again.");
         return;
       }
 
@@ -316,8 +301,7 @@ export default function SignUp() {
       try {
         me = await fetchMeAndStore(data.accessToken);
       } catch (meError) {
-        dumpError("Fetch /users/me Error (google signup)", meError);
-        Alert.alert("Sign Up Failed", "Signed in, but couldn't load your profile.");
+        Alert.alert("Sign Up Failed", "Signed in, but couldn't load your profile. Please wait 1 minute and try again.");
         return;
       }
 
@@ -328,17 +312,24 @@ export default function SignUp() {
         },
       ]);
     } catch (error) {
-      dumpError("Google Sign Up Error", error);
-
       if (isErrorWithCode(error) && error.code === statusCodes.SIGN_IN_CANCELLED) {
-        console.log("[Google Sign-In] User cancelled.");
+        // User cancelled, do nothing
       } else if (isErrorWithCode(error) && error.code === statusCodes.IN_PROGRESS) {
         Alert.alert("Sign Up Failed", "A sign-in attempt is already in progress.");
       } else if (isErrorWithCode(error) && error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
         Alert.alert("Sign Up Failed", "Google Play Services unavailable. Please update and try again.");
       } else {
-        const reason = describeSignUpError(error, `${API_URL}/auth/google/login`);
-        Alert.alert("Sign Up Failed", reason);
+        // Check if it's an invalid credentials/conflict error from Google
+        if (isInvalidCredentialsError(error)) {
+          const message = error?.response?.data?.message || 
+                          (typeof error?.response?.data === "string" ? error.response.data : "") ||
+                          "Sign up failed. Please try again.";
+          Alert.alert("Sign Up Failed", message);
+        } else {
+          // Network or server error
+          const message = describeSignUpError(error);
+          Alert.alert("Sign Up Failed", message);
+        }
       }
     } finally {
       setGoogleLoading(false);

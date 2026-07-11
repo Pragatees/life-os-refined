@@ -344,7 +344,7 @@ export default function NotesScreen(): React.JSX.Element {
               { color: activeTab === "view" ? C.accent : C.textSecondary },
             ]}
           >
-            View Tasks
+            View Notes
           </Text>
         </TouchableOpacity>
       </View>

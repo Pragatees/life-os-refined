@@ -1,43 +1,8 @@
 // app/(goals)/Viewandedit.tsx
 //
 // Goals "View & Edit" screen/component.
-//
-// WHAT WAS BROKEN AND WHAT CHANGED
-// ─────────────────────────────────────────────────────────────────────────
-// 1) THEME BUG
-//    This component previously did not accept `theme` as a prop (or ignored
-//    it), so every color was hardcoded to the dark palette. That's why the
-//    completed / ongoing / upcoming filter tabs never changed when you
-//    toggled bright/dark from the sidebar.
-//
-//    Fix: this component now takes `theme: "bright" | "dark"` as a prop
-//    (exactly like Addandedit.tsx already does), derives `C` from it, and
-//    every single color reference below — tab bar, cards, badges, modal —
-//    reads from `C`, never from a hardcoded hex.
-//
-//    You must also update GoalScreen.tsx to actually pass the prop down
-//    (it currently doesn't):
-//
-//      <Viewandedit
-//        selectedDate={selectedDate}
-//        refreshKey={refreshKey}
-//        onRefresh={refreshGoals}
-//        theme={theme}   // <-- add this line in GoalScreen.tsx
-//      />
-//
-// 2) MODAL ANIMATION
-//    The edit modal used to slide up from the bottom (a bottom sheet).
-//    It's now a centered pop-up: scale (0.85 -> 1) + fade, matching the
-//    Notes ViewAndEdit.tsx pop-up exactly (same spring/timing config).
-//
-// ASSUMPTION ABOUT DATA / API (please correct if this doesn't match your
-// backend — I did not have your real goals file or API contract):
-//   GET    {API_URL}                -> list of goals for the logged-in user
-//   PUT    {API_URL}/:id            -> update a goal's title/description/dueDate
-//   PATCH  {API_URL}/:id/status     -> update just the status field
-//   Goal shape:
-//     { id, title, description, status: "completed"|"ongoing"|"upcoming", dueDate }
-//
+// Now using Zustand store for state management
+
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -51,15 +16,13 @@ import {
   TouchableOpacity,
   TouchableWithoutFeedback,
   View,
+  RefreshControl,
+  ScrollView,
 } from "react-native";
-import axios from "axios";
-import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
+import { useGoalStore, Goal, GoalStatus } from "@/store/goals";
 
-const API_URL = "https://life-os-backend-1ozl.onrender.com/api/goals";
-
-// ─── Theme Tokens (kept identical to GoalScreen.tsx / Addandedit.tsx so the
-// whole Goals feature always looks like one screen, not three) ────────────
+// ─── Theme Tokens ────────────────────────────────────────────────────────────
 const DARK = {
   bg: "#0A0A0B",
   surface: "#18181B",
@@ -75,6 +38,7 @@ const DARK = {
   textSecondary: "#9B9B9F",
   border: "#28282C",
   shadowDark: "#000000",
+  shadowLight: "#2C2C30",
 };
 
 const BRIGHT = {
@@ -92,19 +56,18 @@ const BRIGHT = {
   textSecondary: "#7A7A80",
   border: "#E6E6E9",
   shadowDark: "#B9B9C0",
+  shadowLight: "#FFFFFF",
 };
 
 type Theme = "bright" | "dark";
-type GoalStatus = "completed" | "ongoing" | "upcoming";
 type ModalMode = "loading" | "edit";
 
-interface Goal {
-  id: string;
-  title: string;
-  description?: string;
-  status: GoalStatus;
-  dueDate?: string; // ISO "YYYY-MM-DD"
-}
+// Map your GoalStatus to display status
+const mapStatusToDisplay = (status: GoalStatus): "completed" | "ongoing" | "upcoming" => {
+  if (status === "COMPLETED") return "completed";
+  if (status === "STARTED" || status === "IN_PROGRESS") return "ongoing";
+  return "upcoming";
+};
 
 interface Props {
   selectedDate: string;
@@ -113,44 +76,78 @@ interface Props {
   theme: Theme;
 }
 
-const FILTERS: { id: GoalStatus; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+const FILTERS: { id: "completed" | "ongoing" | "upcoming"; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { id: "ongoing", label: "Ongoing", icon: "time-outline" },
   { id: "completed", label: "Completed", icon: "checkmark-done-outline" },
   { id: "upcoming", label: "Upcoming", icon: "calendar-outline" },
 ];
 
+const STATUS_OPTIONS: { value: GoalStatus; label: string }[] = [
+  { value: "CREATED", label: "Created" },
+  { value: "STARTED", label: "Started" },
+  { value: "IN_PROGRESS", label: "In Progress" },
+  { value: "COMPLETED", label: "Completed" },
+  { value: "CANCELLED", label: "Cancelled" },
+];
+
 function formatDisplayDate(iso?: string): string {
   if (!iso) return "No due date";
-  const [y, m, d] = iso.split("-").map(Number);
-  if (!y || !m || !d) return iso;
-  const date = new Date(y, m - 1, d);
-  return date.toLocaleDateString("en-IN", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  try {
+    const [y, m, d] = iso.split("-").map(Number);
+    if (!y || !m || !d) return iso;
+    const date = new Date(y, m - 1, d);
+    return date.toLocaleDateString("en-IN", {
+      day: "numeric",
+      month: "short",
+      year: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function formatDateForInput(iso?: string): string {
+  if (!iso) return "";
+  return iso;
 }
 
 // ─── ViewAndEdit (Goals) ────────────────────────────────────────────────────
 export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme }: Props) {
   const C = theme === "bright" ? BRIGHT : DARK;
 
-  // ── Filter tab state ──────────────────────────────────────────────────
-  const [activeFilter, setActiveFilter] = useState<GoalStatus>("ongoing");
+  // ── Zustand Store ──────────────────────────────────────────────────────────
+  const {
+    goals,
+    loading,
+    error: storeError,
+    fetchGoals,
+    fetchGoalsByDate,
+    updateGoal,
+    deleteGoal,
+  } = useGoalStore();
 
-  // ── Goals list state ──────────────────────────────────────────────────
-  const [goals, setGoals] = useState<Goal[]>([]);
-  const [loadingList, setLoadingList] = useState(true);
+  // ── Filter tab state ──────────────────────────────────────────────────
+  const [activeFilter, setActiveFilter] = useState<"completed" | "ongoing" | "upcoming">("ongoing");
+
+  // ── Local state for UI ──────────────────────────────────────────────────
+  const [refreshing, setRefreshing] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
 
   // ── Edit modal state ──────────────────────────────────────────────────
   const [modalVisible, setModalVisible] = useState(false);
   const [mode, setMode] = useState<ModalMode>("loading");
   const [activeGoal, setActiveGoal] = useState<Goal | null>(null);
+  
+  // Form fields
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [deadline, setDeadline] = useState("");
+  const [status, setStatus] = useState<GoalStatus>("CREATED");
+  
   const [saving, setSaving] = useState(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
 
-  // ── Pop-up animation state (same config as Notes ViewAndEdit.tsx) ─────
+  // ── Pop-up animation state ─────────────────────────────────────────────
   const scaleAnim = useRef(new Animated.Value(0.85)).current;
   const opacityAnim = useRef(new Animated.Value(0)).current;
 
@@ -192,40 +189,52 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
     [scaleAnim, opacityAnim]
   );
 
-  // ── Load goals list ────────────────────────────────────────────────────
-  const fetchGoals = useCallback(async () => {
-    setLoadingList(true);
+  // ── Load goals from store ──────────────────────────────────────────────
+  const loadGoals = useCallback(async () => {
     try {
-      const token = await AsyncStorage.getItem("token");
-      const response = await axios.get(API_URL, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      setGoals(Array.isArray(response.data) ? response.data : response.data?.goals ?? []);
+      setLocalError(null);
+      await fetchGoalsByDate(selectedDate);
     } catch (error) {
-      console.log(error);
-      Alert.alert("Error", "Unable to load your goals.");
-    } finally {
-      setLoadingList(false);
+      console.error("Error loading goals:", error);
+      setLocalError("Unable to load your goals. Please try again.");
     }
-  }, []);
+  }, [selectedDate, fetchGoalsByDate]);
 
+  // ── Initial load and refresh ───────────────────────────────────────────
   useEffect(() => {
-    fetchGoals();
-    // Re-fetch whenever the parent bumps refreshKey (e.g. after adding a
-    // goal on the "Add / Edit" tab), or when selectedDate changes if your
-    // list is meant to be date-scoped.
-  }, [fetchGoals, refreshKey]);
+    loadGoals();
+  }, [loadGoals, refreshKey, selectedDate]);
 
-  const filteredGoals = useMemo(
-    () => goals.filter((g) => g.status === activeFilter),
-    [goals, activeFilter]
-  );
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await fetchGoals(true);
+      setLocalError(null);
+    } catch (error) {
+      console.error("Refresh error:", error);
+      setLocalError("Failed to refresh goals.");
+    } finally {
+      setRefreshing(false);
+      onRefresh?.();
+    }
+  }, [fetchGoals, onRefresh]);
+
+  // ── Filter goals based on status ──────────────────────────────────────
+  const filteredGoals = useMemo(() => {
+    return goals.filter((g) => {
+      const goalDisplayStatus = mapStatusToDisplay(g.status);
+      return goalDisplayStatus === activeFilter;
+    });
+  }, [goals, activeFilter]);
 
   // ── Open the pop-up modal for a given goal ────────────────────────────
   const handleOpenGoal = (goal: Goal) => {
     setActiveGoal(goal);
-    setTitle(goal.title);
-    setDescription(goal.description ?? "");
+    setTitle(goal.goalName);
+    setDescription(goal.description || "");
+    setDeadline(goal.deadline || "");
+    setStatus(goal.status);
+    setValidationError(null);
     setMode("edit");
     setModalVisible(true);
     runOpenAnimation();
@@ -235,99 +244,239 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
     runCloseAnimation(() => {
       setModalVisible(false);
       setActiveGoal(null);
+      setValidationError(null);
     });
   };
 
-  // ── Save edited goal ───────────────────────────────────────────────────
+  // ── Validate form ──────────────────────────────────────────────────────
+  const validateForm = (): boolean => {
+    setValidationError(null);
+
+    // Validate Goal Name
+    if (!title.trim()) {
+      setValidationError("Goal Name cannot be empty.");
+      return false;
+    }
+
+    // Validate Deadline
+    if (!deadline.trim()) {
+      setValidationError("Deadline cannot be empty.");
+      return false;
+    }
+
+    // Validate Deadline is not before Goal Date
+    if (activeGoal && deadline && activeGoal.goalDate) {
+      const deadlineDate = new Date(deadline);
+      const goalDate = new Date(activeGoal.goalDate);
+      
+      // Reset time to midnight for fair comparison
+      deadlineDate.setHours(0, 0, 0, 0);
+      goalDate.setHours(0, 0, 0, 0);
+      
+      if (deadlineDate < goalDate) {
+        setValidationError("Deadline must not be before the Goal Date.");
+        return false;
+      }
+    }
+
+    return true;
+  };
+
+  // ── Save edited goal using Zustand ────────────────────────────────────
   const saveGoal = async () => {
     if (!activeGoal) return;
-    if (!title.trim()) {
-      Alert.alert("Validation", "Please enter a title.");
+
+    // Validate form
+    if (!validateForm()) {
       return;
     }
 
     setSaving(true);
     try {
-      const token = await AsyncStorage.getItem("token");
-      if (!token) {
-        Alert.alert("Session Expired", "Please login again.");
-        return;
-      }
-
-      const config = {
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
+      // Prepare payload - only send what backend expects
+      const payload = {
+        goalName: title.trim(),
+        description: description.trim(),
+        deadline: deadline,
+        status: status,
       };
 
-      const response = await axios.put(
-        `${API_URL}/${activeGoal.id}`,
-        { title: title.trim(), description: description.trim() },
-        config
-      );
+      const result = await updateGoal(activeGoal.id, payload);
 
-      setGoals((prev) =>
-        prev.map((g) => (g.id === activeGoal.id ? { ...g, ...response.data } : g))
-      );
-
-      Alert.alert("Success", "Goal updated successfully.");
-      closeModal();
-      onRefreshSafely();
-    } catch (error: any) {
-      if (axios.isAxiosError(error)) {
-        console.log("Status:", error.response?.status);
-        console.log("Response:", error.response?.data);
-        Alert.alert("Error", error.response?.data?.message ?? "Unable to save goal.");
+      if (result) {
+        Alert.alert("Success", "Goal updated successfully.", [
+          { 
+            text: "OK", 
+            onPress: () => {
+              closeModal();
+              // Refresh the goal list
+              loadGoals();
+              onRefresh?.();
+            }
+          }
+        ]);
       } else {
-        console.log(error);
-        Alert.alert("Error", "Something went wrong.");
+        Alert.alert("Error", "Failed to update goal. Please try again.");
       }
+    } catch (error: any) {
+      console.error("Error saving goal:", error);
+      
+      // Display backend error message if available
+      const errorMessage = error?.response?.data?.message || 
+                          error?.message || 
+                          "Something went wrong. Please try again.";
+      Alert.alert("Error", errorMessage);
     } finally {
       setSaving(false);
     }
   };
 
-  // ── Mark a goal complete straight from the list ───────────────────────
+  // ── Delete goal using Zustand ─────────────────────────────────────────
+  const handleDeleteGoal = async () => {
+    if (!activeGoal) return;
+    
+    Alert.alert(
+      "Delete Goal",
+      `Are you sure you want to delete "${activeGoal.goalName}"?`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const success = await deleteGoal(activeGoal.id);
+              if (success) {
+                Alert.alert("Success", "Goal deleted successfully.", [
+                  { 
+                    text: "OK", 
+                    onPress: () => {
+                      closeModal();
+                      loadGoals();
+                      onRefresh?.();
+                    }
+                  }
+                ]);
+              } else {
+                Alert.alert("Error", "Failed to delete goal.");
+              }
+            } catch (error: any) {
+              console.error("Error deleting goal:", error);
+              const errorMessage = error?.response?.data?.message || 
+                                  error?.message || 
+                                  "Something went wrong.";
+              Alert.alert("Error", errorMessage);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  // ── Mark a goal complete using Zustand ────────────────────────────────
   const markComplete = async (goal: Goal) => {
     try {
-      const token = await AsyncStorage.getItem("token");
-      const response = await axios.patch(
-        `${API_URL}/${goal.id}/status`,
-        { status: "completed" },
-        { headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } }
-      );
-      setGoals((prev) =>
-        prev.map((g) => (g.id === goal.id ? { ...g, ...response.data, status: "completed" } : g))
-      );
-      onRefreshSafely();
-    } catch (error) {
-      console.log(error);
-      Alert.alert("Error", "Unable to update goal status.");
+      const payload = {
+        goalName: goal.goalName,
+        description: goal.description || "",
+        deadline: goal.deadline || "",
+        status: "COMPLETED" as GoalStatus,
+      };
+
+      const result = await updateGoal(goal.id, payload);
+
+      if (result) {
+        Alert.alert("Success", "Goal marked as completed!");
+        loadGoals();
+        onRefresh?.();
+      } else {
+        Alert.alert("Error", "Failed to update goal status.");
+      }
+    } catch (error: any) {
+      console.error("Error marking goal complete:", error);
+      const errorMessage = error?.response?.data?.message || 
+                          error?.message || 
+                          "Something went wrong.";
+      Alert.alert("Error", errorMessage);
     }
   };
 
-  // onRefresh is optional-safe in case the parent prop changes shape later.
-  function onRefreshSafely() {
-    try {
-      onRefresh?.();
-    } catch (e) {
-      console.log(e);
-    }
-  }
-
-  const statusColor = (status: GoalStatus) => {
-    if (status === "completed") return C.success;
-    if (status === "ongoing") return C.accent;
+  // ── Helper functions for styling ──────────────────────────────────────
+  const getStatusColor = (status: GoalStatus) => {
+    const displayStatus = mapStatusToDisplay(status);
+    if (displayStatus === "completed") return C.success;
+    if (displayStatus === "ongoing") return C.accent;
     return C.warning;
   };
 
-  const statusSoft = (status: GoalStatus) => {
-    if (status === "completed") return C.successSoft;
-    if (status === "ongoing") return C.accentSoft;
+  const getStatusSoft = (status: GoalStatus) => {
+    const displayStatus = mapStatusToDisplay(status);
+    if (displayStatus === "completed") return C.successSoft;
+    if (displayStatus === "ongoing") return C.accentSoft;
     return C.warningSoft;
   };
 
+  const getStatusLabel = (status: GoalStatus) => {
+    return status.charAt(0) + status.slice(1).toLowerCase();
+  };
+
+  const getStatusColorForPicker = (statusValue: GoalStatus) => {
+    switch(statusValue) {
+      case "COMPLETED": return C.success;
+      case "CANCELLED": return C.danger;
+      case "STARTED":
+      case "IN_PROGRESS": return C.accent;
+      default: return C.warning;
+    }
+  };
+
+  // ── Show loading state ─────────────────────────────────────────────────
+  const isLoading = loading || (goals.length === 0 && !localError && !storeError);
+
+  // ── Render Status Picker ──────────────────────────────────────────────
+  const renderStatusPicker = () => (
+    <View style={styles.statusPickerContainer}>
+      <Text style={[styles.fieldLabel, { color: C.textSecondary }]}>
+        Status
+      </Text>
+      <View style={styles.statusOptions}>
+        {STATUS_OPTIONS.map((option) => (
+          <TouchableOpacity
+            key={option.value}
+            onPress={() => setStatus(option.value)}
+            activeOpacity={0.7}
+            style={[
+              styles.statusOption,
+              {
+                backgroundColor: status === option.value 
+                  ? getStatusColorForPicker(option.value) 
+                  : C.surfaceAlt,
+                borderColor: status === option.value 
+                  ? getStatusColorForPicker(option.value) 
+                  : C.border,
+                borderWidth: status === option.value ? 2 : 1,
+              },
+            ]}
+          >
+            <Text
+              style={[
+                styles.statusOptionText,
+                {
+                  color: status === option.value 
+                    ? "#FFFFFF" 
+                    : C.textSecondary,
+                },
+              ]}
+            >
+              {option.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    </View>
+  );
+
+  // ── Render ──────────────────────────────────────────────────────────────
   return (
     <View style={{ flex: 1 }}>
       {/* ── Filter tabs ── */}
@@ -342,6 +491,7 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
               style={[
                 styles.filterTab,
                 active && { backgroundColor: C.accent },
+                !active && { backgroundColor: C.surfaceAlt },
               ]}
             >
               <Ionicons
@@ -363,15 +513,40 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
       </View>
 
       {/* ── Goals list ── */}
-      {loadingList ? (
-        <View style={{ paddingVertical: 60, alignItems: "center" }}>
+      {isLoading ? (
+        <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={C.accent} />
+          <Text style={[styles.loadingText, { color: C.textSecondary }]}>
+            Loading your goals...
+          </Text>
+        </View>
+      ) : (localError || storeError) && goals.length === 0 ? (
+        <View style={styles.emptyState}>
+          <Ionicons 
+            name={localError?.includes("login") ? "lock-closed-outline" : "alert-circle-outline"} 
+            size={32} 
+            color={C.textSecondary} 
+          />
+          <Text style={[styles.emptyText, { color: C.textSecondary }]}>
+            {localError || storeError || "No goals found."}
+          </Text>
+          <TouchableOpacity
+            onPress={handleRefresh}
+            style={[styles.retryBtn, { backgroundColor: C.accent }]}
+          >
+            <Text style={styles.retryBtnText}>Retry</Text>
+          </TouchableOpacity>
         </View>
       ) : filteredGoals.length === 0 ? (
         <View style={styles.emptyState}>
-          <Ionicons name="flag-outline" size={28} color={C.textSecondary} />
+          <Ionicons name="flag-outline" size={32} color={C.textSecondary} />
           <Text style={[styles.emptyText, { color: C.textSecondary }]}>
             No {activeFilter} goals yet.
+          </Text>
+          <Text style={[styles.emptySubText, { color: C.textSecondary }]}>
+            {goals.length > 0 
+              ? `Switch to ${goals.some(g => mapStatusToDisplay(g.status) !== activeFilter) ? 'other' : 'any'} tab to see your goals`
+              : 'Create your first goal to get started!'}
           </Text>
         </View>
       ) : (
@@ -379,61 +554,81 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
           data={filteredGoals}
           keyExtractor={(item) => item.id}
           contentContainerStyle={{ paddingBottom: 24 }}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              onPress={() => handleOpenGoal(item)}
-              activeOpacity={0.8}
-              style={[
-                styles.goalCard,
-                { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark },
-              ]}
-            >
-              <View style={{ flex: 1 }}>
-                <Text style={[styles.goalTitle, { color: C.textPrimary }]} numberOfLines={1}>
-                  {item.title}
-                </Text>
-                {!!item.description && (
-                  <Text
-                    style={[styles.goalDesc, { color: C.textSecondary }]}
-                    numberOfLines={2}
-                  >
-                    {item.description}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              colors={[C.accent]}
+              tintColor={C.accent}
+            />
+          }
+          renderItem={({ item }) => {
+            return (
+              <TouchableOpacity
+                onPress={() => handleOpenGoal(item)}
+                activeOpacity={0.8}
+                style={[
+                  styles.goalCard,
+                  { 
+                    backgroundColor: C.surface, 
+                    borderColor: C.border, 
+                    shadowColor: C.shadowDark,
+                  },
+                ]}
+              >
+                <View style={styles.goalContent}>
+                  <Text style={[styles.goalTitle, { color: C.textPrimary }]} numberOfLines={1}>
+                    {item.goalName}
                   </Text>
-                )}
-                <View style={styles.goalMetaRow}>
-                  <View
-                    style={[
-                      styles.statusPill,
-                      { backgroundColor: statusSoft(item.status) },
-                    ]}
-                  >
-                    <Text style={[styles.statusPillText, { color: statusColor(item.status) }]}>
-                      {item.status}
+                  {!!item.description && (
+                    <Text
+                      style={[styles.goalDesc, { color: C.textSecondary }]}
+                      numberOfLines={2}
+                    >
+                      {item.description}
+                    </Text>
+                  )}
+                  <View style={styles.goalMetaRow}>
+                    <View
+                      style={[
+                        styles.statusPill,
+                        { backgroundColor: getStatusSoft(item.status) },
+                      ]}
+                    >
+                      <Text style={[styles.statusPillText, { color: getStatusColor(item.status) }]}>
+                        {getStatusLabel(item.status)}
+                      </Text>
+                    </View>
+                    <Text style={[styles.dueDateText, { color: C.textSecondary }]}>
+                      <Ionicons name="calendar-outline" size={12} color={C.textSecondary} /> 
+                      {formatDisplayDate(item.deadline)}
                     </Text>
                   </View>
-                  <Text style={[styles.dueDateText, { color: C.textSecondary }]}>
-                    {formatDisplayDate(item.dueDate)}
-                  </Text>
                 </View>
-              </View>
 
-              {item.status !== "completed" && (
-                <TouchableOpacity
-                  onPress={() => markComplete(item)}
-                  activeOpacity={0.75}
-                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  style={[styles.completeBtn, { backgroundColor: C.successSoft }]}
-                >
-                  <Ionicons name="checkmark" size={18} color={C.success} />
-                </TouchableOpacity>
-              )}
-            </TouchableOpacity>
-          )}
+                {item.status !== "COMPLETED" && (
+                  <TouchableOpacity
+                    onPress={() => markComplete(item)}
+                    activeOpacity={0.75}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    style={[styles.completeBtn, { backgroundColor: C.successSoft }]}
+                  >
+                    <Ionicons name="checkmark" size={20} color={C.success} />
+                  </TouchableOpacity>
+                )}
+              </TouchableOpacity>
+            );
+          }}
         />
       )}
 
-      {/* ── Edit modal: centered pop-up (scale + fade), not a bottom sheet ── */}
-      <Modal visible={modalVisible} animationType="fade" transparent onRequestClose={closeModal}>
+      {/* ── Edit modal: centered pop-up ── */}
+      <Modal 
+        visible={modalVisible} 
+        transparent 
+        animationType="fade" 
+        onRequestClose={closeModal}
+      >
         <TouchableWithoutFeedback onPress={closeModal}>
           <View style={styles.backdrop}>
             <TouchableWithoutFeedback onPress={() => {}}>
@@ -448,87 +643,188 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                   },
                 ]}
               >
-                <View style={styles.headerRow}>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.eyebrow, { color: C.accent }]}>Edit Goal</Text>
-                    <Text style={[styles.dateLabel, { color: C.textPrimary }]} numberOfLines={1}>
-                      {activeGoal?.title || "Goal"}
-                    </Text>
-                  </View>
-
-                  <TouchableOpacity
-                    onPress={closeModal}
-                    activeOpacity={0.75}
-                    style={[styles.closeBtn, { backgroundColor: C.surfaceAlt, borderColor: C.border }]}
-                  >
-                    <Ionicons name="close" size={18} color={C.textPrimary} />
-                  </TouchableOpacity>
-                </View>
-
-                {mode === "loading" ? (
-                  <View style={{ paddingVertical: 40, alignItems: "center" }}>
-                    <ActivityIndicator size="large" color={C.accent} />
-                  </View>
-                ) : (
-                  <>
-                    <Text style={[styles.fieldLabel, { color: C.textSecondary }]}>Title</Text>
-                    <TextInput
-                      placeholder="Goal title..."
-                      placeholderTextColor={C.textSecondary}
-                      value={title}
-                      onChangeText={setTitle}
-                      style={[
-                        styles.inputSingle,
-                        { backgroundColor: C.surfaceAlt, borderColor: C.border, color: C.textPrimary },
-                      ]}
-                    />
-
-                    <Text style={[styles.fieldLabel, { color: C.textSecondary }]}>Description</Text>
-                    <TextInput
-                      placeholder="Add more detail..."
-                      placeholderTextColor={C.textSecondary}
-                      multiline
-                      value={description}
-                      onChangeText={setDescription}
-                      style={[
-                        styles.input,
-                        { backgroundColor: C.surfaceAlt, borderColor: C.border, color: C.textPrimary },
-                      ]}
-                    />
-
-                    <View style={{ flexDirection: "row", gap: 10 }}>
-                      <TouchableOpacity
-                        onPress={closeModal}
-                        activeOpacity={0.85}
-                        style={[
-                          styles.actionBtn,
-                          { flex: 1, backgroundColor: C.surfaceAlt, borderWidth: 1, borderColor: C.border },
-                        ]}
-                      >
-                        <Text style={[styles.actionLabel, { color: C.textPrimary }]}>Cancel</Text>
-                      </TouchableOpacity>
-
-                      <TouchableOpacity
-                        onPress={saveGoal}
-                        disabled={saving}
-                        activeOpacity={0.85}
-                        style={[
-                          styles.actionBtn,
-                          { flex: 1, backgroundColor: C.success, opacity: saving ? 0.7 : 1 },
-                        ]}
-                      >
-                        {saving ? (
-                          <ActivityIndicator color="#FFFFFF" />
-                        ) : (
-                          <>
-                            <Ionicons name="checkmark-circle-outline" size={18} color="#FFFFFF" />
-                            <Text style={styles.actionLabel}>Save Changes</Text>
-                          </>
-                        )}
-                      </TouchableOpacity>
+                <ScrollView 
+                  showsVerticalScrollIndicator={false}
+                  contentContainerStyle={styles.modalScrollContent}
+                >
+                  <View style={styles.headerRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.eyebrow, { color: C.accent }]}>Edit Goal</Text>
+                      <Text style={[styles.dateLabel, { color: C.textPrimary }]} numberOfLines={1}>
+                        {activeGoal?.goalName || "Goal"}
+                      </Text>
+                      {activeGoal?.goalDate && (
+                        <Text style={[styles.goalDateText, { color: C.textSecondary }]}>
+                          Goal Date: {formatDisplayDate(activeGoal.goalDate)}
+                        </Text>
+                      )}
                     </View>
-                  </>
-                )}
+
+                    <TouchableOpacity
+                      onPress={closeModal}
+                      activeOpacity={0.75}
+                      style={[
+                        styles.closeBtn, 
+                        { 
+                          backgroundColor: C.surfaceAlt, 
+                          borderColor: C.border 
+                        }
+                      ]}
+                    >
+                      <Ionicons name="close" size={18} color={C.textPrimary} />
+                    </TouchableOpacity>
+                  </View>
+
+                  {mode === "loading" ? (
+                    <View style={styles.modalLoadingContainer}>
+                      <ActivityIndicator size="large" color={C.accent} />
+                    </View>
+                  ) : (
+                    <>
+                      {/* Validation Error */}
+                      {validationError && (
+                        <View style={[styles.validationError, { backgroundColor: C.danger + '20' }]}>
+                          <Ionicons name="alert-circle" size={20} color={C.danger} />
+                          <Text style={[styles.validationErrorText, { color: C.danger }]}>
+                            {validationError}
+                          </Text>
+                        </View>
+                      )}
+
+                      {/* Goal Name */}
+                      <Text style={[styles.fieldLabel, { color: C.textSecondary }]}>
+                        Goal Name *
+                      </Text>
+                      <TextInput
+                        placeholder="Enter goal title..."
+                        placeholderTextColor={C.textSecondary}
+                        value={title}
+                        onChangeText={(text) => {
+                          setTitle(text);
+                          if (validationError) setValidationError(null);
+                        }}
+                        style={[
+                          styles.inputSingle,
+                          { 
+                            backgroundColor: C.surfaceAlt, 
+                            borderColor: validationError && !title.trim() ? C.danger : C.border,
+                            color: C.textPrimary,
+                          },
+                        ]}
+                      />
+
+                      {/* Description */}
+                      <Text style={[styles.fieldLabel, { color: C.textSecondary }]}>
+                        Description
+                      </Text>
+                      <TextInput
+                        placeholder="Add more detail..."
+                        placeholderTextColor={C.textSecondary}
+                        multiline
+                        value={description}
+                        onChangeText={setDescription}
+                        style={[
+                          styles.input,
+                          { 
+                            backgroundColor: C.surfaceAlt, 
+                            borderColor: C.border, 
+                            color: C.textPrimary,
+                          },
+                        ]}
+                      />
+
+                      {/* Deadline */}
+                      <Text style={[styles.fieldLabel, { color: C.textSecondary }]}>
+                        Deadline *
+                      </Text>
+                      <TextInput
+                        placeholder="YYYY-MM-DD"
+                        placeholderTextColor={C.textSecondary}
+                        value={deadline}
+                        onChangeText={(text) => {
+                          setDeadline(text);
+                          if (validationError) setValidationError(null);
+                        }}
+                        style={[
+                          styles.inputSingle,
+                          { 
+                            backgroundColor: C.surfaceAlt, 
+                            borderColor: validationError && !deadline.trim() ? C.danger : C.border,
+                            color: C.textPrimary,
+                          },
+                        ]}
+                      />
+
+                      {/* Status Picker */}
+                      {renderStatusPicker()}
+
+                      {/* Action Buttons */}
+                      <View style={styles.modalActions}>
+                        <TouchableOpacity
+                          onPress={handleDeleteGoal}
+                          activeOpacity={0.85}
+                          style={[
+                            styles.actionBtn,
+                            { 
+                              flex: 0.5, 
+                              backgroundColor: C.danger, 
+                              opacity: saving ? 0.5 : 1,
+                            },
+                          ]}
+                          disabled={saving}
+                        >
+                          <Ionicons name="trash-outline" size={18} color="#FFFFFF" />
+                          <Text style={[styles.actionLabel, { color: "#FFFFFF" }]}>
+                            Delete
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          onPress={closeModal}
+                          activeOpacity={0.85}
+                          style={[
+                            styles.actionBtn,
+                            { 
+                              flex: 0.5, 
+                              backgroundColor: C.surfaceAlt, 
+                              borderWidth: 1, 
+                              borderColor: C.border,
+                            },
+                          ]}
+                        >
+                          <Text style={[styles.actionLabel, { color: C.textPrimary }]}>
+                            Cancel
+                          </Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          onPress={saveGoal}
+                          disabled={saving}
+                          activeOpacity={0.85}
+                          style={[
+                            styles.actionBtn,
+                            { 
+                              flex: 1, 
+                              backgroundColor: C.success, 
+                              opacity: saving ? 0.7 : 1,
+                            },
+                          ]}
+                        >
+                          {saving ? (
+                            <ActivityIndicator color="#FFFFFF" />
+                          ) : (
+                            <>
+                              <Ionicons name="checkmark-circle-outline" size={18} color="#FFFFFF" />
+                              <Text style={[styles.actionLabel, { color: "#FFFFFF" }]}>
+                                Save
+                              </Text>
+                            </>
+                          )}
+                        </TouchableOpacity>
+                      </View>
+                    </>
+                  )}
+                </ScrollView>
               </Animated.View>
             </TouchableWithoutFeedback>
           </View>
@@ -562,6 +858,16 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
+  loadingContainer: {
+    paddingVertical: 60,
+    alignItems: "center",
+    gap: 12,
+  },
+  loadingText: {
+    fontSize: 13,
+    fontWeight: "500",
+  },
+
   emptyState: {
     alignItems: "center",
     justifyContent: "center",
@@ -569,13 +875,31 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   emptyText: {
-    fontSize: 13,
+    fontSize: 14,
     fontWeight: "600",
+    textAlign: "center",
+  },
+  emptySubText: {
+    fontSize: 12,
+    fontWeight: "400",
+    textAlign: "center",
+    paddingHorizontal: 30,
+  },
+  retryBtn: {
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 12,
+    marginTop: 8,
+  },
+  retryBtnText: {
+    color: "#FFFFFF",
+    fontWeight: "700",
+    fontSize: 14,
   },
 
   goalCard: {
     flexDirection: "row",
-    alignItems: "flex-start",
+    alignItems: "center",
     borderWidth: 1,
     borderRadius: 18,
     padding: 14,
@@ -584,6 +908,10 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.12,
     shadowRadius: 12,
     elevation: 3,
+  },
+  goalContent: {
+    flex: 1,
+    paddingRight: 10,
   },
   goalTitle: {
     fontSize: 15,
@@ -615,15 +943,15 @@ const styles = StyleSheet.create({
     fontWeight: "600",
   },
   completeBtn: {
-    width: 32,
-    height: 32,
+    width: 36,
+    height: 36,
     borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    marginLeft: 10,
+    marginLeft: 4,
   },
 
-  // Modal — centered pop-up card (scale + fade), matching Notes ViewAndEdit.
+  // Modal styles
   backdrop: {
     flex: 1,
     backgroundColor: "rgba(0,0,0,0.5)",
@@ -634,10 +962,18 @@ const styles = StyleSheet.create({
   sheet: {
     width: "100%",
     maxWidth: 420,
+    maxHeight: "90%",
     borderWidth: 1,
     borderRadius: 24,
     padding: 20,
     paddingBottom: 24,
+    shadowOffset: { width: 0, height: 20 },
+    shadowOpacity: 0.25,
+    shadowRadius: 30,
+    elevation: 20,
+  },
+  modalScrollContent: {
+    flexGrow: 1,
   },
   headerRow: {
     flexDirection: "row",
@@ -657,6 +993,10 @@ const styles = StyleSheet.create({
     fontWeight: "800",
     letterSpacing: -0.3,
   },
+  goalDateText: {
+    fontSize: 12,
+    marginTop: 4,
+  },
   closeBtn: {
     width: 34,
     height: 34,
@@ -664,6 +1004,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
+    marginLeft: 8,
   },
   fieldLabel: {
     fontSize: 11,
@@ -688,6 +1029,15 @@ const styles = StyleSheet.create({
     textAlignVertical: "top",
     marginBottom: 16,
   },
+  modalLoadingContainer: {
+    paddingVertical: 40,
+    alignItems: "center",
+  },
+  modalActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 8,
+  },
   actionBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -697,8 +1047,39 @@ const styles = StyleSheet.create({
     borderRadius: 14,
   },
   actionLabel: {
-    color: "#FFFFFF",
     fontWeight: "700",
     fontSize: 14,
+  },
+  statusPickerContainer: {
+    marginBottom: 16,
+  },
+  statusOptions: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  statusOption: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginRight: 4,
+    marginBottom: 4,
+  },
+  statusOptionText: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  validationError: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+    gap: 8,
+  },
+  validationErrorText: {
+    fontSize: 13,
+    fontWeight: "600",
+    flex: 1,
   },
 });

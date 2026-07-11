@@ -2,13 +2,24 @@
 // ─────────────────────────────────────────────────────────────
 // Shared Task Types
 // Single source of truth for all Task-related models.
-// Import these interfaces throughout the application.
+// Mirrors the Spring Boot backend DTOs.
 // ─────────────────────────────────────────────────────────────
 
 /**
  * Available task priority levels.
  */
 export type Priority = "HIGH" | "MEDIUM" | "LOW";
+
+/**
+ * Backend recurrence types.
+ * Must match RepeatType.java exactly.
+ */
+export type RepeatType =
+  | "NEVER"
+  | "DAILY"
+  | "WEEKLY"
+  | "MONTHLY"
+  | "YEARLY";
 
 /**
  * Task object returned from the backend.
@@ -23,10 +34,10 @@ export interface Task {
   /** Optional task description */
   description: string;
 
-  /** Scheduled date (ISO: yyyy-MM-dd) */
+  /** Scheduled date (yyyy-MM-dd) */
   taskDate: string;
 
-  /** Scheduled time (HH:mm:ss from backend) */
+  /** Scheduled time (HH:mm:ss) */
   taskTime: string;
 
   /** Task priority */
@@ -34,6 +45,42 @@ export interface Task {
 
   /** Completion status */
   completed: boolean;
+
+  /**
+   * Recurrence type.
+   * NEVER means this is a normal task or a generated occurrence.
+   */
+  repeatType: RepeatType;
+
+  /**
+   * Whether recurrence is currently active.
+   * Only meaningful for master recurring tasks.
+   */
+  recurrenceActive: boolean;
+}
+
+/**
+ * Payload for creating a task.
+ */
+export interface CreateTaskRequest {
+  taskName: string;
+  description: string;
+  taskDate: string;
+  taskTime: string;
+  priority: Priority;
+  repeatType: RepeatType;
+}
+
+/**
+ * Payload for updating a task.
+ */
+export interface UpdateTaskRequest {
+  taskName: string;
+  description: string;
+  taskDate: string;
+  taskTime: string;
+  priority: Priority;
+  repeatType: RepeatType;
 }
 
 /**
@@ -83,12 +130,6 @@ export interface MonthlyProgress {
 
 /**
  * Calendar heatmap/progress data.
- * Example:
- * {
- *   "2026-07-01": 100,
- *   "2026-07-02": 75,
- *   "2026-07-03": 40
- * }
  */
 export interface CalendarData {
   [date: string]: number;

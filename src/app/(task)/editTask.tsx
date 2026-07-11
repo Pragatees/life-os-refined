@@ -20,9 +20,13 @@ import {
 import DateTimePicker, { DateTimePickerEvent } from "@react-native-community/datetimepicker";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 
 // ── Import the shared store ──────────────────────────────────────────────────
-import { useTaskStore, Task, Priority } from "../../store/task";
+// RepeatType is now a shared type (see store/task.ts / types/task.ts) so both
+// AddTask and EditTask stay in sync with the backend's Master Task enum:
+// NEVER | DAILY | WEEKLY | MONTHLY | YEARLY.
+import { useTaskStore, Task, Priority, RepeatType } from "../../store/task";
 
 // ─── Theme Tokens (Claymorphism — matches AddTask) ─────────────────────────
 type ThemeTokens = {
@@ -95,6 +99,61 @@ const PRIORITY_CONFIG: Record<Priority, { label: string; icon: keyof typeof Ioni
 };
 const PRIORITY_OPTIONS: Priority[] = ["HIGH", "MEDIUM", "LOW"];
 
+// Backend-owned recurrence options (Master Task Architecture). The frontend
+// only collects the choice and forwards it — no local recurrence generation.
+const REPEAT_CONFIG: Record<RepeatType, { label: string; icon: keyof typeof Ionicons.glyphMap }> = {
+  NEVER:   { label: "Never",   icon: "close-circle-outline" },
+  DAILY:   { label: "Daily",   icon: "sunny-outline" },
+  WEEKLY:  { label: "Weekly",  icon: "calendar-outline" },
+  MONTHLY: { label: "Monthly", icon: "calendar-number-outline" },
+  YEARLY:  { label: "Yearly",  icon: "repeat-outline" },
+};
+const REPEAT_OPTIONS: RepeatType[] = ["NEVER", "DAILY", "WEEKLY", "MONTHLY", "YEARLY"];
+
+// ─── API config ─────────────────────────────────────────────────────────────
+// TODO: point this at the same host your store/task.ts uses for fetchTasks /
+// markComplete / updateTask, so this component doesn't drift from the rest
+// of the app's API layer.
+const API_BASE_URL = "https://life-os-backend-1ozl.onrender.com/api/tasks";
+// TODO: match whichever key your auth flow already uses to persist the JWT.
+
+type ApiResult = { ok: boolean; error?: string };
+
+// Local delete implementation for:
+//   DELETE /{taskId}  ->  ResponseEntity<MessageResponse>
+// This lives here (rather than in the store) because `deleteTask` isn't on
+// the store yet. If/when it's added to store/task.ts, this function can be
+// removed and swapped back for `useTaskStore((s) => s.deleteTask)`.
+async function deleteTaskRequest(taskId: string): Promise<ApiResult> {
+  try {
+    const accessToken = await AsyncStorage.getItem("token");
+
+    const response = await fetch(`${API_BASE_URL}/${taskId}`, {
+      method: "DELETE",
+      headers: {
+        "Content-Type": "application/json",
+        ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
+      },
+    });
+
+    if (!response.ok) {
+      let message = `Delete failed (status ${response.status})`;
+      try {
+        const body = await response.json();
+        if (body?.message) message = body.message;
+      } catch {
+        // Response wasn't JSON — fall back to the generic message above.
+      }
+      return { ok: false, error: message };
+    }
+
+    // Backend returns MessageResponse on success (e.g. { message: "Task deleted successfully" }).
+    return { ok: true };
+  } catch (e: any) {
+    return { ok: false, error: e?.message ?? "Network error while deleting task." };
+  }
+}
+
 // ─── Formatters ───────────────────────────────────────────────────────────────
 function fmtTimeDisplay(s: string): string {
   const [h, m] = s.split(":").map(Number);
@@ -160,7 +219,24 @@ const ts = StyleSheet.create({
 });
 
 // ─── Action Dropdown ──────────────────────────────────────────────────────────
-function ActionDropdown({ visible, onClose, onComplete, C }: { visible: boolean; onClose: () => void; onComplete: () => void; C: ThemeTokens }) {
+// Supports two actions: "Mark as Complete" (hidden once the task is
+// already completed) and "Delete Task" (always available). Both close the
+// dropdown first, then hand off to the parent's handler.
+function ActionDropdown({
+  visible,
+  onClose,
+  onComplete,
+  onDelete,
+  showComplete,
+  C,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onComplete: () => void;
+  onDelete: () => void;
+  showComplete: boolean;
+  C: ThemeTokens;
+}) {
   const fadeAnim  = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(0.92)).current;
 
@@ -178,11 +254,20 @@ function ActionDropdown({ visible, onClose, onComplete, C }: { visible: boolean;
     <>
       <TouchableOpacity style={dd.backdrop} activeOpacity={1} onPress={onClose} />
       <Animated.View style={[dd.panel, { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark }, { opacity: fadeAnim, transform: [{ scale: scaleAnim }] }]}>
-        <TouchableOpacity style={dd.item} activeOpacity={0.75} onPress={() => { onClose(); onComplete(); }}>
-          <View style={[dd.iconWrap, { backgroundColor: `${C.success}18`, borderColor: `${C.success}33` }]}>
-            <Ionicons name="checkmark-circle-outline" size={15} color={C.success} />
+        {showComplete && (
+          <TouchableOpacity style={dd.item} activeOpacity={0.75} onPress={() => { onClose(); onComplete(); }}>
+            <View style={[dd.iconWrap, { backgroundColor: `${C.success}18`, borderColor: `${C.success}33` }]}>
+              <Ionicons name="checkmark-circle-outline" size={15} color={C.success} />
+            </View>
+            <Text style={[dd.itemText, { color: C.success }]}>Mark as Complete</Text>
+          </TouchableOpacity>
+        )}
+        {showComplete && <View style={[dd.divider, { backgroundColor: C.border }]} />}
+        <TouchableOpacity style={dd.item} activeOpacity={0.75} onPress={() => { onClose(); onDelete(); }}>
+          <View style={[dd.iconWrap, { backgroundColor: `${C.danger}18`, borderColor: `${C.danger}33` }]}>
+            <Ionicons name="trash-outline" size={15} color={C.danger} />
           </View>
-          <Text style={[dd.itemText, { color: C.success }]}>Mark as Complete</Text>
+          <Text style={[dd.itemText, { color: C.danger }]}>Delete Task</Text>
         </TouchableOpacity>
       </Animated.View>
     </>
@@ -195,12 +280,27 @@ const dd = StyleSheet.create({
     minWidth: 180, shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.22, shadowRadius: 18, elevation: 10,
   } as ViewStyle,
   item: { flexDirection: "row", alignItems: "center", paddingHorizontal: 13, paddingVertical: 12 } as ViewStyle,
+  divider: { height: StyleSheet.hairlineWidth, marginHorizontal: 4 } as ViewStyle,
   iconWrap: { width: 26, height: 26, borderRadius: 9, borderWidth: 1, alignItems: "center", justifyContent: "center", marginRight: 10 } as ViewStyle,
   itemText: { fontSize: 13, fontWeight: "700" } as TextStyle,
 });
 
 // ─── Task Card ────────────────────────────────────────────────────────────────
-function TaskCard({ task, index, onEdit, onMarkComplete, C }: { task: Task; index: number; onEdit: (t: Task) => void; onMarkComplete: (t: Task) => void; C: ThemeTokens }) {
+function TaskCard({
+  task,
+  index,
+  onEdit,
+  onMarkComplete,
+  onDelete,
+  C,
+}: {
+  task: Task;
+  index: number;
+  onEdit: (t: Task) => void;
+  onMarkComplete: (t: Task) => void;
+  onDelete: (t: Task) => void;
+  C: ThemeTokens;
+}) {
   const fadeAnim  = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(10)).current;
   const indexRef  = useRef(index);
@@ -234,14 +334,22 @@ function TaskCard({ task, index, onEdit, onMarkComplete, C }: { task: Task; inde
             </Text>
           )}
         </View>
-        {!task.completed && (
-          <View style={styles.relative}>
-            <TouchableOpacity style={[tc.menuBtn, { backgroundColor: C.surfaceAlt, borderColor: C.border }]} activeOpacity={0.7} onPress={() => setDropdownOpen((v) => !v)}>
-              <Ionicons name="ellipsis-vertical" size={15} color={C.textSecondary} />
-            </TouchableOpacity>
-            <ActionDropdown visible={dropdownOpen} onClose={() => setDropdownOpen(false)} onComplete={() => onMarkComplete(task)} C={C} />
-          </View>
-        )}
+        {/* Three-dot menu is always visible now, so completed tasks can
+            still be deleted. The "Mark as Complete" option inside the
+            dropdown is hidden once the task is already completed. */}
+        <View style={styles.relative}>
+          <TouchableOpacity style={[tc.menuBtn, { backgroundColor: C.surfaceAlt, borderColor: C.border }]} activeOpacity={0.7} onPress={() => setDropdownOpen((v) => !v)}>
+            <Ionicons name="ellipsis-vertical" size={15} color={C.textSecondary} />
+          </TouchableOpacity>
+          <ActionDropdown
+            visible={dropdownOpen}
+            onClose={() => setDropdownOpen(false)}
+            onComplete={() => onMarkComplete(task)}
+            onDelete={() => onDelete(task)}
+            showComplete={!task.completed}
+            C={C}
+          />
+        </View>
       </View>
       <View style={tc.metaRow}>
         <View style={[tc.priorityBadge, { backgroundColor: `${priorityColor}18`, borderColor: `${priorityColor}40` }]}>
@@ -256,6 +364,12 @@ function TaskCard({ task, index, onEdit, onMarkComplete, C }: { task: Task; inde
           <Ionicons name="calendar-outline" size={11} color={C.textSecondary} />
           <Text style={[tc.meta, { color: C.textSecondary }]}> {fmtDateDisplay(task.taskDate)}</Text>
         </View>
+        {!!task.repeatType && task.repeatType !== "NEVER" && (
+          <View style={styles.metaItem}>
+            <Ionicons name={REPEAT_CONFIG[task.repeatType].icon} size={11} color={C.textSecondary} />
+            <Text style={[tc.meta, { color: C.textSecondary }]}> {REPEAT_CONFIG[task.repeatType].label}</Text>
+          </View>
+        )}
       </View>
       {!task.completed && (
         <TouchableOpacity style={[tc.editBtn, { borderTopColor: C.border }]} onPress={() => onEdit(task)} activeOpacity={0.75}>
@@ -289,8 +403,15 @@ function EditSheet({ visible, task, onClose, onSave, saving, C }: { visible: boo
   const [taskDate,    setTaskDate]    = useState(new Date());
   const [taskTime,    setTaskTime]    = useState(new Date());
   const [priority,    setPriority]    = useState<Priority>("MEDIUM");
+  // Recurrence is fully backend-owned (Master Task Architecture). This state
+  // only reflects the user's choice — it is sent as-is to the backend, which
+  // creates/updates the master task and schedules all future occurrences.
+  const [repeatType,  setRepeatType]  = useState<RepeatType>("NEVER");
   const [pickerMode,  setPickerMode]  = useState<PickerMode>(null);
-  const slideAnim = useRef(new Animated.Value(300)).current;
+  // Pop-up animation (replaces the old bottom-sheet slide): fades in and
+  // scales up from a slightly-shrunk state, with a light spring bounce.
+  const fadeAnim  = useRef(new Animated.Value(0)).current;
+  const scaleAnim = useRef(new Animated.Value(0.85)).current;
 
   useEffect(() => {
     if (task) {
@@ -300,13 +421,26 @@ function EditSheet({ visible, task, onClose, onSave, saving, C }: { visible: boo
       setTaskDate(isNaN(d.getTime()) ? new Date() : d);
       setTaskTime(parseTimeToDate(task.taskTime));
       setPriority(task.priority);
+      setRepeatType(task.repeatType ?? "NEVER");
       setPickerMode(null);
     }
   }, [task]);
 
   useEffect(() => {
-    Animated.spring(slideAnim, { toValue: visible ? 0 : 300, useNativeDriver: true, speed: 18, bounciness: 2 }).start();
-  }, [visible, slideAnim]);
+    if (visible) {
+      fadeAnim.setValue(0);
+      scaleAnim.setValue(0.85);
+      Animated.parallel([
+        Animated.timing(fadeAnim, { toValue: 1, duration: 200, useNativeDriver: true }),
+        Animated.spring(scaleAnim, { toValue: 1, useNativeDriver: true, speed: 16, bounciness: 6 }),
+      ]).start();
+    } else {
+      Animated.parallel([
+        Animated.timing(fadeAnim, { toValue: 0, duration: 150, useNativeDriver: true }),
+        Animated.timing(scaleAnim, { toValue: 0.85, duration: 150, useNativeDriver: true }),
+      ]).start();
+    }
+  }, [visible, fadeAnim, scaleAnim]);
 
   if (!visible || !task) return null;
 
@@ -319,15 +453,30 @@ function EditSheet({ visible, task, onClose, onSave, saving, C }: { visible: boo
 
   const handleSave = () => {
     if (!taskName.trim()) { Alert.alert("Missing Name", "Please enter a task name."); return; }
-    onSave(task.id, { taskName: taskName.trim(), description: description.trim(), taskDate: fmtDateDB(taskDate), taskTime: fmtTimeDB(taskTime), priority });
+    onSave(task.id, {
+      taskName: taskName.trim(),
+      description: description.trim(),
+      taskDate: fmtDateDB(taskDate),
+      taskTime: fmtTimeDB(taskTime),
+      priority,
+      repeatType,
+      recurrenceActive: task.recurrenceActive ?? false,
+    });
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="none" onRequestClose={onClose}>
       <View style={styles.modalRoot}>
-        <TouchableOpacity style={sh.backdrop} activeOpacity={1} onPress={() => !saving && onClose()} />
-        <Animated.View style={[sh.sheet, { backgroundColor: C.bg, borderColor: C.border, shadowColor: C.shadowDark }, { transform: [{ translateY: slideAnim }] }]}>
-          <View style={[sh.handle, { backgroundColor: C.border }]} />
+        <Animated.View style={[StyleSheet.absoluteFill, { opacity: fadeAnim }]}>
+          <TouchableOpacity style={sh.backdrop} activeOpacity={1} onPress={() => !saving && onClose()} />
+        </Animated.View>
+        <Animated.View
+          style={[
+            sh.sheet,
+            { backgroundColor: C.bg, borderColor: C.border, shadowColor: C.shadowDark },
+            { opacity: fadeAnim, transform: [{ scale: scaleAnim }] },
+          ]}
+        >
           <View style={sh.header}>
             <Text style={[sh.title, { color: C.textPrimary }]}>Edit Task</Text>
             <TouchableOpacity onPress={onClose} disabled={saving} style={[sh.closeBtn, { backgroundColor: C.surfaceAlt }]}>
@@ -399,6 +548,31 @@ function EditSheet({ visible, task, onClose, onSave, saving, C }: { visible: boo
                 );
               })}
             </View>
+
+            {/* Repeat — same chip design as AddTask. Value is forwarded to
+                the backend as-is; the backend's Master Task Architecture owns
+                all recurrence generation, including updating future
+                occurrences when this changes. */}
+            <Text style={[sh.label, { color: C.textSecondary }]}>Repeat</Text>
+            <View style={sh.repeatWrap}>
+              {REPEAT_OPTIONS.map((opt) => {
+                const active = repeatType === opt;
+                return (
+                  <TouchableOpacity
+                    key={opt}
+                    onPress={() => setRepeatType(opt)}
+                    activeOpacity={0.8}
+                    style={[
+                      sh.repeatChip,
+                      { borderColor: active ? C.accent : C.border, backgroundColor: active ? `${C.accent}18` : C.surfaceAlt },
+                    ]}
+                  >
+                    <Ionicons name={REPEAT_CONFIG[opt].icon} size={13} color={active ? C.accent : C.textSecondary} style={{ marginRight: 6 }} />
+                    <Text style={{ fontSize: 12, color: active ? C.accent : C.textSecondary, fontWeight: active ? "700" : "500" }}>{REPEAT_CONFIG[opt].label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
           </ScrollView>
           <TouchableOpacity onPress={handleSave} disabled={saving} activeOpacity={0.85} style={saving ? styles.btnDisabled : undefined}>
             <LinearGradient colors={C.accentGradient} start={{ x: 0, y: 0 }} end={{ x: 1, y: 1 }} style={sh.saveBtn}>
@@ -423,9 +597,21 @@ function EditSheet({ visible, task, onClose, onSave, saving, C }: { visible: boo
   );
 }
 const sh = StyleSheet.create({
-  backdrop:   { ...StyleSheet.absoluteFill, backgroundColor: "rgba(0,0,0,0.5)" } as ViewStyle,
-  sheet:      { borderTopLeftRadius: 26, borderTopRightRadius: 26, borderWidth: 1, paddingHorizontal: 18, paddingTop: 12, paddingBottom: Platform.OS === "ios" ? 34 : 20, maxHeight: "88%", shadowOffset: { width: 0, height: -6 }, shadowOpacity: 0.18, shadowRadius: 20, elevation: 10 } as ViewStyle,
-  handle:     { width: 34, height: 4, borderRadius: 2, alignSelf: "center", marginBottom: 14 } as ViewStyle,
+  backdrop:   { ...StyleSheet.absoluteFill, backgroundColor: "rgba(0,0,0,0.55)" } as ViewStyle,
+  sheet:      {
+    width: "90%",
+    alignSelf: "center",
+    borderRadius: 26,
+    borderWidth: 1,
+    paddingHorizontal: 18,
+    paddingTop: 18,
+    paddingBottom: 20,
+    maxHeight: "80%",
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.28,
+    shadowRadius: 24,
+    elevation: 14,
+  } as ViewStyle,
   header:     { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 16 } as ViewStyle,
   title:      { fontSize: 15, fontWeight: "800", letterSpacing: -0.2 } as TextStyle,
   closeBtn:   { width: 28, height: 28, borderRadius: 9, alignItems: "center", justifyContent: "center" } as ViewStyle,
@@ -435,6 +621,8 @@ const sh = StyleSheet.create({
   pickerBtn:  { flexDirection: "row", alignItems: "center", borderWidth: 1, borderRadius: 16, paddingHorizontal: 11, paddingVertical: 11, marginBottom: 14 } as ViewStyle,
   pickerText: { fontSize: 12, fontWeight: "600", flexShrink: 1 } as TextStyle,
   chip:       { flexDirection: "row", alignItems: "center", justifyContent: "center", borderWidth: 1, borderRadius: 14, paddingVertical: 10 } as ViewStyle,
+  repeatWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 16 } as ViewStyle,
+  repeatChip: { flexDirection: "row", alignItems: "center", justifyContent: "center", borderWidth: 1, borderRadius: 14, paddingVertical: 9, paddingHorizontal: 12 } as ViewStyle,
   saveBtn:    { flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 15, borderRadius: 18, marginTop: 4 } as ViewStyle,
   saveBtnText:{ color: "#FFF", fontSize: 14, fontWeight: "700", letterSpacing: 0.3, marginLeft: 6 } as TextStyle,
 });
@@ -449,11 +637,16 @@ export default function EditTaskComponent({ onTaskChanged, theme = "dark" }: Edi
   const fetchTasks    = useTaskStore((s: any) => s.fetchTasks);
   const markComplete  = useTaskStore((s: any) => s.markComplete);
   const updateTask    = useTaskStore((s: any) => s.updateTask);
+  // NOTE: `deleteTask` is NOT on the store yet, so it's implemented locally
+  // above as `deleteTaskRequest` (calls DELETE /{taskId}). Once the store
+  // grows a proper `deleteTask` action, swap `handleDelete` below back to
+  // `useTaskStore((s) => s.deleteTask)` and drop the local helper.
 
   const [refreshing,   setRefreshing]   = useState(false);
   const [editingTask,  setEditingTask]  = useState<Task | null>(null);
   const [editVisible,  setEditVisible]  = useState(false);
   const [saving,       setSaving]       = useState(false);
+  const [deletingId,   setDeletingId]   = useState<string | null>(null);
   const [toastMsg,     setToastMsg]     = useState("");
   const [toastVisible, setToastVisible] = useState(false);
 
@@ -493,6 +686,39 @@ export default function EditTaskComponent({ onTaskChanged, theme = "dark" }: Edi
     );
   }, [markComplete, showToast, onTaskChanged]);
 
+  const handleDelete = useCallback((task: Task) => {
+    Alert.alert(
+      "Delete Task",
+      `Are you sure you want to delete "${task.taskName}"? This cannot be undone.`,
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete", style: "destructive",
+          onPress: async () => {
+            setDeletingId(task.id);
+            const result = await deleteTaskRequest(task.id);
+            setDeletingId(null);
+
+            if (result.ok) {
+              // If the deleted task was mid-edit, close the sheet too
+              if (editingTask?.id === task.id) {
+                setEditVisible(false);
+                setEditingTask(null);
+              }
+              // Store has no `deleteTask` action to mutate local state, so
+              // force a refetch to bring the list in sync with the server.
+              await fetchTasks(true);
+              showToast("🗑️ Task deleted.");
+              onTaskChanged?.();
+            } else {
+              Alert.alert("Delete Failed", result.error ?? "Unknown error");
+            }
+          },
+        },
+      ]
+    );
+  }, [fetchTasks, showToast, onTaskChanged, editingTask]);
+
   const openEdit  = useCallback((task: Task) => { setEditingTask(task); setEditVisible(true); }, []);
   const closeEdit = useCallback(() => { if (saving) return; setEditVisible(false); setEditingTask(null); }, [saving]);
 
@@ -528,7 +754,7 @@ export default function EditTaskComponent({ onTaskChanged, theme = "dark" }: Edi
         </View>
         <View>
           <Text style={[styles.headerTitle, { color: C.textPrimary }]}>Manage Tasks</Text>
-          <Text style={[styles.headerSubtitle, { color: C.textSecondary }]}>Edit or complete today's tasks</Text>
+          <Text style={[styles.headerSubtitle, { color: C.textSecondary }]}>Edit, complete, or delete today's tasks</Text>
         </View>
       </View>
 
@@ -536,7 +762,14 @@ export default function EditTaskComponent({ onTaskChanged, theme = "dark" }: Edi
         data={tasks}
         keyExtractor={(item: Task) => item.id}
         renderItem={({ item, index }) => (
-          <TaskCard task={item} index={index} onEdit={openEdit} onMarkComplete={handleMarkComplete} C={C} />
+          <View>
+            <TaskCard task={item} index={index} onEdit={openEdit} onMarkComplete={handleMarkComplete} onDelete={handleDelete} C={C} />
+            {deletingId === item.id && (
+              <View style={styles.deletingOverlay} pointerEvents="none">
+                <ActivityIndicator color={C.danger} size="small" />
+              </View>
+            )}
+          </View>
         )}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
@@ -570,7 +803,7 @@ const styles = StyleSheet.create({
   iconSpacer: { marginRight: 6 } as TextStyle,
   btnDisabled: { opacity: 0.6 } as ViewStyle,
   metaItem: { flexDirection: "row", alignItems: "center", marginRight: 6, marginBottom: 4 } as ViewStyle,
-  modalRoot: { flex: 1, justifyContent: "flex-end" } as ViewStyle,
+  modalRoot: { flex: 1, justifyContent: "center", alignItems: "center" } as ViewStyle,
   headerRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 18, paddingTop: 16, paddingBottom: 10, gap: 10 } as ViewStyle,
   headerIconWrap: { width: 34, height: 34, borderRadius: 11, borderWidth: 1, alignItems: "center", justifyContent: "center" } as ViewStyle,
   headerTitle: { fontSize: 16, fontWeight: "800", letterSpacing: -0.2 } as TextStyle,
@@ -580,4 +813,9 @@ const styles = StyleSheet.create({
   emptyIcon: { marginBottom: 12 } as TextStyle,
   emptyTitle: { fontSize: 14, fontWeight: "700", marginBottom: 4 } as TextStyle,
   emptySubtitle: { fontSize: 12 } as TextStyle,
+  deletingOverlay: {
+    position: "absolute", top: 0, left: 0, right: 0, bottom: 12,
+    alignItems: "center", justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.15)", borderRadius: 20,
+  } as ViewStyle,
 });

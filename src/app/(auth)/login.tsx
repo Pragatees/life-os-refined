@@ -47,58 +47,18 @@ const T = {
 };
 
 // ─── Google Sign-In Configuration ───────────────────────────────────────────
-// Replace with your actual Web Client ID from Google Cloud Console.
 GoogleSignin.configure({
   webClientId:
     "260015412456-k4nkvjb1hd0mabk5g362otqg3818l6nt.apps.googleusercontent.com",
   offlineAccess: true,
 });
 
-// Small helper so every error path prints a fully serialized, readable object
-// to the console (Metro/dev-tools) instead of "[object Object]" or a crash.
-// This is dev-facing only now — nothing here is ever shown to the user.
-const dumpError = (label: string, err: any) => {
-  try {
-    if (err === null || err === undefined) {
-      console.error(`\n[${label}] ------------------------------`);
-      console.error(`[${label}] Received a null/undefined error (no details available).`);
-      console.error(`[${label}] ------------------------------\n`);
-      return;
-    }
-    const safe = {
-      message: err?.message,
-      name: err?.name,
-      code: err?.code,
-      isAxiosError: err?.isAxiosError,
-      response_status: err?.response?.status,
-      response_data: err?.response?.data,
-      response_headers: err?.response?.headers,
-      request_present: !!err?.request,
-      config_url: err?.config?.url,
-      config_method: err?.config?.method,
-      stack: err?.stack,
-    };
-    console.error(`\n[${label}] ------------------------------`);
-    console.error(JSON.stringify(safe, null, 2));
-    console.error(`[${label}] ------------------------------\n`);
-  } catch (e) {
-    console.error(`[${label}] (failed to serialize error)`, err);
-  }
-};
-
-// Helper: pull a profile picture URL out of a backend response regardless of
-// whether it comes back camelCase ("profilePicture") or snake_case straight
-// from the `profile_picture` DB column ("profile_picture"). Falls back to "".
+// Helper: pull a profile picture URL out of a backend response
 const extractProfilePicture = (data: any): string => {
   return data?.profilePicture ?? data?.profile_picture ?? "";
 };
 
 // ─── /auth/me fetch + storage ───────────────────────────────────────────────
-// After we have an access token (from either email/password or Google login),
-// we hit GET /api/auth/me with that token to get the canonical user profile,
-// then persist everything EXCEPT the userId to AsyncStorage. The access
-// token itself is what we use going forward to re-fetch /me whenever needed,
-// so there's no need to keep the id around locally.
 type MeResponse = {
   id?: number | string;
   username?: string;
@@ -127,27 +87,12 @@ const fetchMeAndStore = async (accessToken: string): Promise<MeResponse> => {
     ["provider", me.provider ?? ""],
     ["theme", "dark"],
   ]);
-  console.log("accessToken and profile stored in AsyncStorage:", {
-    accessToken,
-    username: me.username,
-    fullName: me.fullName,
-    email: me.email,
-    profilePicture: me.profilePicture,
-    provider: me.provider,
-  });
   return me;
 };
 
-// ─── Retry / lockout tracking (NEW) ────────────────────────────────────────
-// Replaces the old "pop an Alert with the raw error" behavior. Failed login
-// attempts (network errors, backend errors, timeouts, etc.) are tracked in
-// AsyncStorage rather than component state, so a lockout survives an app
-// reload/kill. After MAX_ATTEMPTS consecutive failures, login is disabled
-// for LOCKOUT_DURATION_MS and a live countdown is shown instead of the
-// button; before that threshold, the user just sees which attempt they're
-// on and can retry immediately.
+// ─── Retry / lockout tracking ────────────────────────────────────────────────
 const MAX_ATTEMPTS = 3;
-const LOCKOUT_DURATION_MS = 5 * 60 * 1000; // 5 minutes
+const LOCKOUT_DURATION_MS = 60 * 1000; // 1 minute
 const KEY_LOGIN_ATTEMPTS = "loginAttemptCount";
 const KEY_LOGIN_LOCKOUT_UNTIL = "loginLockoutUntil";
 
@@ -158,13 +103,6 @@ const formatCountdown = (ms: number): string => {
   return `${m}:${s.toString().padStart(2, "0")}`;
 };
 
-/**
- * Call after any failed login attempt (email/password or Google — they
- * share the same counter since both ultimately hit the same account).
- * Reads the current count straight from AsyncStorage rather than component
- * state to avoid stale-closure bugs if this is ever called back-to-back.
- * Returns the human-readable status line to show in the banner.
- */
 const recordFailedLoginAttempt = async (reason: string): Promise<{ status: string; lockoutUntil: number }> => {
   const raw = await AsyncStorage.getItem(KEY_LOGIN_ATTEMPTS);
   const currentCount = raw ? parseInt(raw, 10) : 0;
@@ -177,7 +115,7 @@ const recordFailedLoginAttempt = async (reason: string): Promise<{ status: strin
       [KEY_LOGIN_LOCKOUT_UNTIL, String(until)],
     ]);
     return {
-      status: `Too many failed attempts. Please wait 5 minutes before trying again.`,
+      status: `Too many failed attempts. Please wait 1 minute before trying again.`,
       lockoutUntil: until,
     };
   }
@@ -193,25 +131,40 @@ const clearLoginAttempts = async (): Promise<void> => {
   await AsyncStorage.multiRemove([KEY_LOGIN_ATTEMPTS, KEY_LOGIN_LOCKOUT_UNTIL]);
 };
 
-/** Turns a caught axios/native error into a short, user-safe status line. */
-const describeLoginError = (error: any, url: string): string => {
+/** Determines if an error is due to invalid credentials (username/password/email) */
+const isInvalidCredentialsError = (error: any): boolean => {
+  if (!error?.response) return false;
+  const status = error.response.status;
+  const message = error.response.data?.message || 
+                  (typeof error.response.data === "string" ? error.response.data : "");
+  // 401 Unauthorized or 400 Bad Request with invalid credentials message
+  if (status === 401) return true;
+  if (status === 400) {
+    const lowerMsg = message.toLowerCase();
+    return lowerMsg.includes("invalid") || 
+           lowerMsg.includes("incorrect") || 
+           lowerMsg.includes("not found") ||
+           lowerMsg.includes("does not exist");
+  }
+  return false;
+};
+
+/** Turns a caught axios/native error into a user-safe status line */
+const describeLoginError = (error: any): string => {
   if (!error) {
-    return "An unknown error occurred. Please try again.";
+    return "An unknown error occurred. Please wait 1 minute and try again.";
   }
-  if (error?.code === "ERR_NETWORK") {
-    return `Network error reaching ${url}. Check your connection.`;
-  }
-  if (error?.response) {
+  
+  // Check if it's an invalid credentials error first
+  if (isInvalidCredentialsError(error)) {
     const status = error.response.status;
-    const serverMsg =
-      error.response.data?.message ||
-      (typeof error.response.data === "string" ? error.response.data : "");
-    return `Server error (${status}) at ${url}${serverMsg ? ` — ${serverMsg}` : "."}`;
+    const serverMsg = error.response.data?.message ||
+                      (typeof error.response.data === "string" ? error.response.data : "");
+    return serverMsg || "Invalid username/email or password.";
   }
-  if (error?.request) {
-    return `No response from ${url}. Please check your connection.`;
-  }
-  return error?.message || "An unknown error occurred. Please try again.";
+  
+  // For any other error (network, server down, DB issues, etc.) - generic message
+  return "Please wait 1 minute before trying again.";
 };
 
 export default function Login() {
@@ -222,7 +175,6 @@ export default function Login() {
   const [showPassword, setShowPassword] = useState(false);
   const [focusedField, setFocusedField] = useState<string | null>(null);
 
-  // Inline status banner (replaces the old error Alerts) + lockout state.
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [lockoutUntil, setLockoutUntil] = useState<number>(0);
   const [nowTick, setNowTick] = useState<number>(Date.now());
@@ -240,7 +192,6 @@ export default function Login() {
     ]).start();
   }, [fadeAnim, slideAnim, logoScale]);
 
-  // Load any lockout that's already active (e.g. app was reopened mid-cooldown).
   useEffect(() => {
     (async () => {
       const raw = await AsyncStorage.getItem(KEY_LOGIN_LOCKOUT_UNTIL);
@@ -251,7 +202,6 @@ export default function Login() {
     })();
   }, []);
 
-  // Tick every second while locked out so the countdown stays live.
   useEffect(() => {
     if (!lockoutUntil) return;
     const id = setInterval(() => setNowTick(Date.now()), 1000);
@@ -261,7 +211,6 @@ export default function Login() {
   const lockoutRemainingMs = lockoutUntil ? Math.max(0, lockoutUntil - nowTick) : 0;
   const isLockedOut = lockoutRemainingMs > 0;
 
-  // Once the countdown hits zero, clear everything so the user can try again.
   useEffect(() => {
     if (lockoutUntil && lockoutRemainingMs === 0) {
       clearLoginAttempts();
@@ -325,7 +274,6 @@ export default function Login() {
       try {
         me = await fetchMeAndStore(data.accessToken);
       } catch (meError: any) {
-        dumpError("Fetch /users/me Error (login)", meError);
         const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(
           "Signed in, but couldn't load your profile."
         );
@@ -344,11 +292,18 @@ export default function Login() {
         },
       ]);
     } catch (error: any) {
-      dumpError("Login Error", error);
-      const reason = describeLoginError(error, `${BASE_URL}/auth/login`);
-      const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(reason);
-      setStatusMessage(status);
-      if (newLockout) setLockoutUntil(newLockout);
+      const reason = describeLoginError(error);
+      
+      // Only count invalid credentials as attempts
+      if (isInvalidCredentialsError(error)) {
+        const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(reason);
+        setStatusMessage(status);
+        if (newLockout) setLockoutUntil(newLockout);
+      } else {
+        // For any other error (network, server issues), show the generic message
+        setStatusMessage(reason);
+        // Don't count these toward lockout attempts
+      }
     } finally {
       setLoading(false);
     }
@@ -370,24 +325,15 @@ export default function Login() {
 
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
 
-      // Clear any cached Google session first. Without this, signIn() will
-      // silently reuse the last-used account instead of showing the account
-      // picker — which is exactly the "always logs into the same account"
-      // behavior we want to avoid.
       try {
         await GoogleSignin.signOut();
       } catch (signOutErr) {
-        // Safe to ignore — this just means there was no active session to
-        // clear (e.g. very first sign-in ever on this device).
-        console.log("[Google Sign-In] signOut before signIn skipped:", signOutErr);
+        // Safe to ignore
       }
 
       const response = await GoogleSignin.signIn();
-      console.log("[Google Sign-In] Raw response:", JSON.stringify(response, null, 2));
 
       if (!isSuccessResponse(response)) {
-        // User cancelled the sign-in flow — not a failure, don't count it.
-        console.log("[Google Sign-In] Not a success response (likely cancelled).");
         setGoogleLoading(false);
         return;
       }
@@ -395,10 +341,6 @@ export default function Login() {
       const idToken = response.data?.idToken;
 
       if (!idToken) {
-        console.error(
-          "[Google Sign-In] No ID token received. Full response:",
-          JSON.stringify(response, null, 2)
-        );
         const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(
           "Google didn't return an ID token."
         );
@@ -408,10 +350,6 @@ export default function Login() {
         return;
       }
 
-      console.log("[Google Sign-In] Got idToken, length:", idToken.length);
-
-      // Isolate the backend call so we know for certain whether the failure
-      // is Google's SDK or our own server rejecting the token.
       let backendResponse;
       try {
         backendResponse = await axios.post(
@@ -420,8 +358,7 @@ export default function Login() {
           { timeout: 15000 }
         );
       } catch (backendErr: any) {
-        dumpError("Google Backend Call Error", backendErr);
-        throw backendErr; // handled by outer catch below
+        throw backendErr;
       }
 
       const data = backendResponse.data;
@@ -439,7 +376,6 @@ export default function Login() {
       try {
         me = await fetchMeAndStore(data.accessToken);
       } catch (meError: any) {
-        dumpError("Fetch /auth/me Error (google login)", meError);
         const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(
           "Signed in, but couldn't load your profile."
         );
@@ -458,27 +394,28 @@ export default function Login() {
         },
       ]);
     } catch (error: any) {
-      dumpError("Google Login Error", error);
-
-      // Cancellation / in-progress / play-services issues are surfaced
-      // inline too now, but only genuine failures count toward the lockout.
       if (isErrorWithCode(error) && error.code === statusCodes.SIGN_IN_CANCELLED) {
-        console.log("[Google Sign-In] User cancelled.");
+        // User cancelled - do nothing
       } else if (isErrorWithCode(error) && error.code === statusCodes.IN_PROGRESS) {
         setStatusMessage("A sign-in attempt is already in progress.");
       } else {
         let reason: string;
         if (isErrorWithCode(error)) {
-          reason =
-            error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE
-              ? "Google Play Services unavailable. Please update and try again."
-              : `Google Sign-In failed (code ${error.code}).`;
+          reason = error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE
+            ? "Please wait 1 minute before trying again."
+            : "Please wait 1 minute before trying again.";
         } else {
-          reason = describeLoginError(error, `${BASE_URL}/auth/google/login`);
+          reason = describeLoginError(error);
         }
-        const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(reason);
-        setStatusMessage(status);
-        if (newLockout) setLockoutUntil(newLockout);
+        
+        // For Google sign-in, check if it's an auth error from the backend
+        if (error?.response && isInvalidCredentialsError(error)) {
+          const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(reason);
+          setStatusMessage(status);
+          if (newLockout) setLockoutUntil(newLockout);
+        } else {
+          setStatusMessage(reason);
+        }
       }
     } finally {
       setGoogleLoading(false);
@@ -492,7 +429,6 @@ export default function Login() {
       end={{ x: 1, y: 1 }}
       style={styles.gradientBackground}
     >
-      {/* Static decorative clay blobs */}
       <View style={[styles.blob, styles.blobOne]} />
       <View style={[styles.blob, styles.blobTwo]} />
 
@@ -522,7 +458,7 @@ export default function Login() {
               <Text style={styles.subtitle}>Sign in to your account</Text>
             </View>
 
-            {/* Status / retry / lockout banner — replaces error Alerts */}
+            {/* Status / retry / lockout banner */}
             {statusMessage && (
               <View style={styles.statusBanner}>
                 <Feather
@@ -613,7 +549,6 @@ export default function Login() {
                   </TouchableOpacity>
                 </View>
 
-                {/* Forgot Password */}
                 <TouchableOpacity
                   style={styles.forgotPasswordContainer}
                   onPress={() => router.push("/forgotPassword")}

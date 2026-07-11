@@ -1,17 +1,5 @@
 // app/(task)/AIReviewScreen.tsx
-//
-// Parent screen. Owns the theme + active tab state and renders the
-// day / week / month child screens. Also exports the shared theme
-// tokens, types, prompt builder, and Gemini client so the child
-// screens (day_review.tsx, week_review.tsx, month_review.tsx) can
-// import them and stay perfectly in sync with the parent's theme.
-//
-// Sidebar + header now mirror the pattern used in app/(dashboard)/index.tsx:
-// a menu button opens an animated slide-in Sidebar panel with a
-// tap-to-dismiss backdrop, and the header carries the same
-// menu / title / theme-toggle layout.
-//
-// Adjust these import paths to match your actual project structure.
+
 import React, { useState, useCallback, useEffect, useRef } from "react";
 import {
   View,
@@ -21,7 +9,11 @@ import {
   StyleSheet,
   Animated,
   Dimensions,
+  StatusBar,
+  Platform,
+  ActivityIndicator,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from "@react-native-async-storage/async-storage";
@@ -43,7 +35,7 @@ import MonthReview from "./month_review";
 // the Bearer token you already use elsewhere. Left here as a placeholder
 // only so the component compiles standalone.
 // ─────────────────────────────────────────────────────────────────────────
-const GEMINI_API_KEY = "";
+const GEMINI_API_KEY = "AQ.Ab8RN6IgyelaMYdcyxSivbPFcVLsMUUppn_umLGQiY1UkxcPmg";
 export const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 export const getToken = (): Promise<string | null> =>
@@ -277,6 +269,13 @@ const getSidebarWidth = () => Math.min(300, Dimensions.get("window").width * 0.8
 export default function AIReviewScreen() {
   const [theme, setTheme] = useState<Theme>("dark");
   const [activeTab, setActiveTab] = useState<ReviewType>("day");
+  const [fullName, setFullName] = useState("");
+  const [username, setUsername] = useState("");
+  const [themeLoaded, setThemeLoaded] = useState(false);
+
+  // ── Header entrance animation ──────────────────────────────────────────
+  const headerFade = useRef(new Animated.Value(0)).current;
+  const headerSlide = useRef(new Animated.Value(-8)).current;
 
   // ── Sidebar state (same shape as the dashboard) ──────────────────────
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -288,7 +287,54 @@ export default function AIReviewScreen() {
 
   const C = colorsForTheme(theme);
 
-  const toggleTheme = () => setTheme((t) => (t === "dark" ? "bright" : "dark"));
+  // ── Load user data ──────────────────────────────────────────────────────
+  useEffect(() => {
+    const loadData = async () => {
+      try {
+        const pairs = await AsyncStorage.multiGet(["theme", "fullName", "username"]);
+        const map = Object.fromEntries(pairs.map(([k, v]) => [k, v ?? ""]));
+        if (map.theme === "bright" || map.theme === "dark") {
+          setTheme(map.theme as Theme);
+        }
+        setFullName(map.fullName);
+        setUsername(map.username);
+      } catch (error) {
+        console.error("Error loading data:", error);
+      } finally {
+        setThemeLoaded(true);
+      }
+    };
+    loadData();
+  }, []);
+
+  // ── Header entrance animation ──────────────────────────────────────────
+  useEffect(() => {
+    if (themeLoaded) {
+      Animated.parallel([
+        Animated.timing(headerFade, { 
+          toValue: 1, 
+          duration: 380, 
+          useNativeDriver: true 
+        }),
+        Animated.timing(headerSlide, { 
+          toValue: 0, 
+          duration: 380, 
+          useNativeDriver: true 
+        }),
+      ]).start();
+    }
+  }, [themeLoaded, headerFade, headerSlide]);
+
+  const toggleTheme = useCallback(async (value: boolean) => {
+    const next: Theme = value ? "dark" : "bright";
+    setTheme(next);
+    try {
+      await AsyncStorage.setItem("theme", next);
+    } catch (error) {
+      console.error("Error saving theme:", error);
+    }
+  }, []);
+
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
@@ -342,53 +388,96 @@ export default function AIReviewScreen() {
     { id: "month", label: "Month", icon: "stats-chart-outline" },
   ];
 
-  return (
-    <View style={[sharedStyles.root, { backgroundColor: C.bg }]}>
-      {/* ── Header with centered content ── */}
-      <View style={sharedStyles.headerContainer}>
-        <View style={sharedStyles.headerRow}>
-          <TouchableOpacity
-            onPress={openSidebar}
-            activeOpacity={0.75}
-            hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-            style={[
-              sharedStyles.iconBtn,
-              { backgroundColor: C.surfaceAlt, borderColor: C.border },
-            ]}
-          >
-            <Ionicons name="menu-outline" size={18} color={C.accent} />
-          </TouchableOpacity>
+  const displayName = (fullName || username || "").trim();
 
-          <View style={sharedStyles.headerCenter}>
-            <Text style={[sharedStyles.title, { color: C.accent }]}>
-              AI Review
-            </Text>
-            <Text style={[sharedStyles.subtitle, { color: C.textSecondary }]}>
-              Your personal productivity coach
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            onPress={toggleTheme}
-            style={[
-              sharedStyles.themeToggle,
-              { backgroundColor: C.surface, borderColor: C.border },
-            ]}
-          >
-            <Ionicons
-              name={theme === "dark" ? "moon-outline" : "sunny-outline"}
-              size={16}
-              color={C.accent}
-            />
-          </TouchableOpacity>
+  if (!themeLoaded) {
+    return (
+      <View style={[styles.loadingContainer, { backgroundColor: DARK.bg }]}>
+        <View style={[styles.loadingClay, { backgroundColor: DARK.surface, shadowColor: DARK.shadowDark }]}>
+          <ActivityIndicator size="large" color={DARK.accent} />
         </View>
       </View>
+    );
+  }
+
+  return (
+    <View
+      style={[
+        styles.root,
+        { 
+          backgroundColor: C.bg, 
+          paddingTop: Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 0 
+        },
+      ]}
+    >
+      <StatusBar
+        barStyle={theme === "bright" ? "dark-content" : "light-content"}
+        backgroundColor={C.bg}
+      />
+
+      {/* ── Enhanced Header with Card Design ── */}
+      <Animated.View
+        style={[
+          styles.headerCard,
+          {
+            backgroundColor: C.surface,
+            borderColor: C.border,
+            shadowColor: C.shadowDark,
+            opacity: headerFade,
+            transform: [{ translateY: headerSlide }],
+          },
+        ]}
+      >
+        {/* Left: Menu Button */}
+        <TouchableOpacity
+          onPress={openSidebar}
+          activeOpacity={0.75}
+          hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+          style={[styles.iconBtn, { backgroundColor: C.surfaceAlt, borderColor: C.border }]}
+        >
+          <Ionicons name="menu-outline" size={20} color={C.textPrimary} />
+        </TouchableOpacity>
+
+        {/* Center: Content */}
+        <View style={styles.headerCenter}>
+          <Text style={[styles.eyebrow, { color: C.accent }]}>
+            {displayName ? `Hi, ${displayName.split(" ")[0]}` : "Welcome back"}
+          </Text>
+          <Text style={[styles.title, { color: C.textPrimary }]}>
+            AI Review
+          </Text>
+          <Text style={[styles.date, { color: C.textSecondary }]}>
+            {new Date().toLocaleDateString("en-IN", {
+              weekday: "long",
+              day: "numeric",
+              month: "long",
+            })}
+          </Text>
+        </View>
+
+        {/* Right: Theme Toggle */}
+        <TouchableOpacity
+          onPress={() => toggleTheme(theme === "bright")}
+          activeOpacity={0.75}
+          style={[styles.themeBtn, { backgroundColor: C.surfaceAlt, borderColor: C.border }]}
+        >
+          <Ionicons
+            name={theme === "dark" ? "sunny-outline" : "moon-outline"}
+            size={17}
+            color={C.accent}
+          />
+        </TouchableOpacity>
+      </Animated.View>
 
       {/* ── Segmented Tabs ── */}
       <View
         style={[
           sharedStyles.segment,
-          { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark },
+          { 
+            backgroundColor: C.surface, 
+            borderColor: C.border, 
+            shadowColor: C.shadowDark 
+          },
         ]}
       >
         {TABS.map((tab) => {
@@ -467,58 +556,99 @@ export default function AIReviewScreen() {
   );
 }
 
-// ── Shared Styles ────────────────────────────────────────────────────────
-export const sharedStyles = StyleSheet.create({
-  root: { flex: 1, padding: 16 },
-  scrollContent: { paddingBottom: 40 },
-
-  headerContainer: {
-    marginBottom: 16,
+// ── Enhanced Styles ────────────────────────────────────────────────────────
+const styles = StyleSheet.create({
+  root: {
+    flex: 1,
+    paddingHorizontal: 16,
   },
 
-  headerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingVertical: 8,
-  },
-
-  headerCenter: {
+  loadingContainer: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
   },
 
-  iconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 12,
-    borderWidth: 1,
+  loadingClay: {
+    width: 84,
+    height: 84,
+    borderRadius: 26,
     alignItems: "center",
     justifyContent: "center",
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    elevation: 10,
   },
 
-  title: { 
-    fontSize: 22, 
-    fontWeight: "800", 
+  // ── Enhanced Header Card (matches Dashboard) ──────────────────────────
+  headerCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginHorizontal: 0,
+    marginTop: 6,
+    marginBottom: 16,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 24,
+    borderWidth: 1,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 6,
+  },
+
+  headerCenter: {
+    alignItems: "center",
+    flex: 1,
+  },
+
+  eyebrow: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
+    marginBottom: 2,
+  },
+
+  title: {
+    fontSize: 19,
+    fontWeight: "800",
     letterSpacing: -0.4,
     textAlign: "center",
   },
-  subtitle: { 
-    fontSize: 12, 
+
+  date: {
+    fontSize: 11,
     marginTop: 2,
     textAlign: "center",
   },
 
-  themeToggle: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+  iconBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
   },
 
+  themeBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+});
+
+// ── Shared Styles (updated for consistency) ──────────────────────────────
+export const sharedStyles = StyleSheet.create({
+  // ... keep existing sharedStyles but remove header-related ones
+  // since they're now in the main styles object
+  
   segment: {
     flexDirection: "row",
     borderRadius: 20,
@@ -531,7 +661,9 @@ export const sharedStyles = StyleSheet.create({
     elevation: 4,
     marginBottom: 14,
   },
+  
   segmentItem: { flex: 1 },
+  
   segmentActive: {
     flexDirection: "row",
     alignItems: "center",
@@ -540,6 +672,7 @@ export const sharedStyles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 14,
   },
+  
   segmentInactive: {
     flexDirection: "row",
     alignItems: "center",
@@ -548,9 +681,35 @@ export const sharedStyles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 14,
   },
+  
   segmentText: { fontSize: 12, fontWeight: "600" },
   segmentTextActive: { fontSize: 12, fontWeight: "700", color: "#FFFFFF" },
 
+  // ── Sidebar-related styles ──────────────────────────────────────────────
+  backdrop: {
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+
+  sidebarPanel: {
+    position: "absolute",
+    top: 0,
+    bottom: 0,
+    left: 0,
+    borderRightWidth: 1,
+    borderTopRightRadius: 28,
+    borderBottomRightRadius: 28,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOffset: { width: 6, height: 0 },
+    shadowOpacity: 0.3,
+    shadowRadius: 16,
+    elevation: 16,
+    zIndex: 1000,
+  },
+
+  // ── Other shared styles ──────────────────────────────────────────────────
+  scrollContent: { paddingBottom: 40 },
+  
   card: {
     borderRadius: 22,
     borderWidth: 1,
@@ -575,12 +734,14 @@ export const sharedStyles = StyleSheet.create({
     gap: 10,
     marginBottom: 14,
   },
+  
   statBox: {
     flexBasis: "47%",
     borderRadius: 14,
     paddingVertical: 12,
     paddingHorizontal: 12,
   },
+  
   statValue: { fontSize: 20, fontWeight: "800" },
   statLabel: { fontSize: 11, marginTop: 2 },
 
@@ -589,10 +750,12 @@ export const sharedStyles = StyleSheet.create({
     borderRadius: 6,
     overflow: "hidden",
   },
+  
   progressBarFill: {
     height: 8,
     borderRadius: 6,
   },
+  
   completionText: {
     fontSize: 12,
     fontWeight: "600",
@@ -608,6 +771,7 @@ export const sharedStyles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
   },
+  
   noteText: { fontSize: 12, flex: 1, lineHeight: 17 },
 
   generateBtnWrap: { marginTop: 16, borderRadius: 18, overflow: "hidden" },
@@ -647,27 +811,5 @@ export const sharedStyles = StyleSheet.create({
     fontSize: 10,
     marginTop: 8,
     fontStyle: "italic",
-  },
-
-  // ── Sidebar-related styles (mirrors app/(dashboard)/index.tsx) ────────
-  backdrop: {
-    backgroundColor: "rgba(0,0,0,0.55)",
-  },
-
-  sidebarPanel: {
-    position: "absolute",
-    top: 0,
-    bottom: 0,
-    left: 0,
-    borderRightWidth: 1,
-    borderTopRightRadius: 28,
-    borderBottomRightRadius: 28,
-    overflow: "hidden",
-    shadowColor: "#000",
-    shadowOffset: { width: 6, height: 0 },
-    shadowOpacity: 0.3,
-    shadowRadius: 16,
-    elevation: 16,
-    zIndex: 1000,
   },
 });
