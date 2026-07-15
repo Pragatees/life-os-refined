@@ -11,6 +11,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 
 import { useProgressStore } from "../../store/progress";
+import { getTodayDateString, formatDate } from "../../utils/date";
 
 interface MonthViewProps {
   theme?: "dark" | "bright";
@@ -57,12 +58,11 @@ const BRIGHT: ThemeColors = {
 
 const WEEKDAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
 
-// Zero-padded local date string, e.g. "2026-07-10" — built from local
-// Y/M/D components (not toISOString) so it never shifts a day due to UTC.
+// Zero-padded local date string using our utility
+// This ensures consistent date formatting across the app
 const toDateKey = (year: number, month: number, day: number) => {
-  const mm = String(month + 1).padStart(2, "0");
-  const dd = String(day).padStart(2, "0");
-  return `${year}-${mm}-${dd}`;
+  const date = new Date(year, month, day);
+  return formatDate(date);
 };
 
 export default function MonthView({
@@ -70,18 +70,17 @@ export default function MonthView({
 }: MonthViewProps) {
   const C = theme === "dark" ? DARK : BRIGHT;
 
-  // Get data from progress store.
-  // NOTE: MonthView no longer fetches data itself. Fetching is owned
-  // exclusively by the parent ProgressScreen via
-  // useProgressStore.getState().initializeProgress(). This component
-  // only reads from the store.
+  // Get monthly-specific state from the store
   const {
     monthlyTasks,
     monthlyProgress,
-    loading,
-    error,
-    fetchMonthlyProgress, // still exposed for manual retry, not auto-called
+    monthlyLoading: loading,
+    monthlyError: error,
+    fetchMonthlyProgress,
   } = useProgressStore();
+
+  // Get today's date in the correct format
+  const today = getTodayDateString();
 
   /**
    * Map each date (that has tasks) to its completion stats.
@@ -139,6 +138,7 @@ export default function MonthView({
           completed: number;
           percentage: number;
           hasTasks: boolean;
+          isToday: boolean;
         };
 
     const cells: Cell[] = [];
@@ -150,6 +150,7 @@ export default function MonthView({
     for (let day = 1; day <= daysInMonth; day++) {
       const dateKey = toDateKey(year, month, day);
       const stats = dayStatsMap[dateKey];
+      const isToday = dateKey === today;
 
       cells.push({
         type: "day",
@@ -159,6 +160,7 @@ export default function MonthView({
         completed: stats?.completed ?? 0,
         percentage: stats?.percentage ?? 0,
         hasTasks: !!stats,
+        isToday,
       });
     }
 
@@ -167,6 +169,7 @@ export default function MonthView({
       cells.push({ type: "blank", key: `trail-${cells.length}` });
     }
 
+    // Format month label using local date
     const label = firstOfMonth.toLocaleDateString("en-US", {
       month: "long",
       year: "numeric",
@@ -175,9 +178,9 @@ export default function MonthView({
     return {
       calendarCells: cells,
       monthLabel: label,
-      todayKey: toDateKey(year, month, now.getDate()),
+      todayKey: today,
     };
-  }, [dayStatsMap]);
+  }, [dayStatsMap, today]);
 
   const isEmpty = monthlyTasks.length === 0;
 
@@ -212,7 +215,7 @@ export default function MonthView({
     );
   }
 
-  // Show error state
+  // Show error state with retry
   if (error) {
     return (
       <View style={[styles.container, { backgroundColor: C.background }]}>
@@ -270,6 +273,13 @@ export default function MonthView({
             </Text>
             <Text style={[styles.label, { color: C.secondary }]}>Pending</Text>
           </View>
+
+          <View style={styles.stat}>
+            <Text style={[styles.value, { color: C.accent }]}>
+              {monthlyProgress.overdueTasks || 0}
+            </Text>
+            <Text style={[styles.label, { color: C.secondary }]}>Overdue</Text>
+          </View>
         </View>
 
         <View style={[styles.progressBackground, { backgroundColor: C.empty }]}>
@@ -289,8 +299,106 @@ export default function MonthView({
         </Text>
       </View>
 
-      {/* Empty Month */}
-      {isEmpty ? (
+      {/* Calendar Grid */}
+      <View
+        style={[
+          styles.calendarCard,
+          { backgroundColor: C.surface, borderColor: C.border },
+        ]}
+      >
+        {/* Weekday header row */}
+        <View style={styles.weekdayRow}>
+          {WEEKDAY_LABELS.map((label, i) => (
+            <View key={`wd-${i}`} style={styles.weekdayCell}>
+              <Text style={[styles.weekdayLabel, { color: C.secondary }]}>
+                {label}
+              </Text>
+            </View>
+          ))}
+        </View>
+
+        {/* Calendar grid */}
+        <View style={styles.grid}>
+          {calendarCells.map((cell) => {
+            if (cell.type === "blank") {
+              return <View key={cell.key} style={styles.dayCellWrap} />;
+            }
+
+            const color = getCellColor(cell.hasTasks, cell.percentage);
+            const isToday = cell.isToday;
+
+            return (
+              <View key={cell.key} style={styles.dayCellWrap}>
+                <View
+                  style={[
+                    styles.dayCell,
+                    {
+                      backgroundColor: cell.hasTasks ? color : "transparent",
+                      borderColor: isToday ? C.accent : color,
+                      borderWidth: isToday ? 2 : cell.hasTasks ? 0 : 1,
+                    },
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.dayNumber,
+                      {
+                        color: cell.hasTasks ? "#FFFFFF" : C.secondary,
+                        fontWeight: isToday ? "800" : "600",
+                      },
+                    ]}
+                  >
+                    {cell.day}
+                  </Text>
+                </View>
+              </View>
+            );
+          })}
+        </View>
+
+        {/* Legend */}
+        <View style={styles.legendRow}>
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: C.success }]} />
+            <Text style={[styles.legendLabel, { color: C.secondary }]}>
+              80%+
+            </Text>
+          </View>
+
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: C.warning }]} />
+            <Text style={[styles.legendLabel, { color: C.secondary }]}>
+              50–79%
+            </Text>
+          </View>
+
+          <View style={styles.legendItem}>
+            <View style={[styles.legendDot, { backgroundColor: C.danger }]} />
+            <Text style={[styles.legendLabel, { color: C.secondary }]}>
+              &lt;50%
+            </Text>
+          </View>
+
+          <View style={styles.legendItem}>
+            <View
+              style={[
+                styles.legendDot,
+                { 
+                  backgroundColor: "transparent", 
+                  borderWidth: 1, 
+                  borderColor: C.empty,
+                },
+              ]}
+            />
+            <Text style={[styles.legendLabel, { color: C.secondary }]}>
+              No tasks
+            </Text>
+          </View>
+        </View>
+      </View>
+
+      {/* Empty State - Only show if no tasks at all */}
+      {isEmpty && (
         <View style={styles.emptyContainer}>
           <Ionicons name="calendar-outline" size={64} color={C.secondary} />
           <Text style={[styles.emptyTitle, { color: C.text }]}>
@@ -299,99 +407,6 @@ export default function MonthView({
           <Text style={[styles.emptySubtitle, { color: C.secondary }]}>
             There are no completed or pending tasks for this month.
           </Text>
-        </View>
-      ) : (
-        <View
-          style={[
-            styles.calendarCard,
-            { backgroundColor: C.surface, borderColor: C.border },
-          ]}
-        >
-          {/* Weekday header row */}
-          <View style={styles.weekdayRow}>
-            {WEEKDAY_LABELS.map((label, i) => (
-              <View key={`wd-${i}`} style={styles.weekdayCell}>
-                <Text style={[styles.weekdayLabel, { color: C.secondary }]}>
-                  {label}
-                </Text>
-              </View>
-            ))}
-          </View>
-
-          {/* Calendar grid */}
-          <View style={styles.grid}>
-            {calendarCells.map((cell) => {
-              if (cell.type === "blank") {
-                return <View key={cell.key} style={styles.dayCellWrap} />;
-              }
-
-              const color = getCellColor(cell.hasTasks, cell.percentage);
-              const isToday = cell.key === todayKey;
-
-              return (
-                <View key={cell.key} style={styles.dayCellWrap}>
-                  <View
-                    style={[
-                      styles.dayCell,
-                      {
-                        backgroundColor: cell.hasTasks ? color : "transparent",
-                        borderColor: isToday ? C.accent : color,
-                        borderWidth: isToday ? 2 : cell.hasTasks ? 0 : 1,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.dayNumber,
-                        {
-                          color: cell.hasTasks ? "#FFFFFF" : C.secondary,
-                          fontWeight: isToday ? "800" : "600",
-                        },
-                      ]}
-                    >
-                      {cell.day}
-                    </Text>
-                  </View>
-                </View>
-              );
-            })}
-          </View>
-
-          {/* Legend */}
-          <View style={styles.legendRow}>
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: C.success }]} />
-              <Text style={[styles.legendLabel, { color: C.secondary }]}>
-                80%+
-              </Text>
-            </View>
-
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: C.warning }]} />
-              <Text style={[styles.legendLabel, { color: C.secondary }]}>
-                50–79%
-              </Text>
-            </View>
-
-            <View style={styles.legendItem}>
-              <View style={[styles.legendDot, { backgroundColor: C.danger }]} />
-              <Text style={[styles.legendLabel, { color: C.secondary }]}>
-                &lt;50%
-              </Text>
-            </View>
-
-            <View style={styles.legendItem}>
-              <View
-                style={[
-                  styles.legendDot,
-                  { backgroundColor: "transparent", borderWidth: 1, borderColor: C.empty },
-                ]}
-              />
-              <Text style={[styles.legendLabel, { color: C.secondary }]}>
-                No tasks
-              </Text>
-            </View>
-          </View>
         </View>
       )}
     </View>

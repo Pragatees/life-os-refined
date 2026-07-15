@@ -20,7 +20,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { GoogleGenAI } from "@google/genai";
 
 import { ProgressSummary } from "../../store/progress";
-import { getTodayDateString } from "../../services/notificationService";
+import { getTodayDateString } from "../../utils/date";
 import { Task } from "../../types/task";
 
 import Sidebar from "../(tabs)/sidebar";
@@ -35,7 +35,7 @@ import MonthReview from "./month_review";
 // the Bearer token you already use elsewhere. Left here as a placeholder
 // only so the component compiles standalone.
 // ─────────────────────────────────────────────────────────────────────────
-const GEMINI_API_KEY = "AQ.Ab8RN6IgyelaMYdcyxSivbPFcVLsMUUppn_umLGQiY1UkxcPmg";
+const GEMINI_API_KEY = "AQ.Ab8RN6JD1xvSmrVZSrScYqhj17PRzCWTfc195-ZdLO_bbPpwaA";
 export const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 export const getToken = (): Promise<string | null> =>

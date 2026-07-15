@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import GoalNotificationService from "../notifications/goal/GoalNotificationService";
 
 const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
 
@@ -63,6 +64,9 @@ interface GoalState {
   createGoal: (payload: CreateGoalPayload) => Promise<Goal | null>;
   updateGoal: (goalId: string, payload: UpdateGoalPayload) => Promise<Goal | null>;
   deleteGoal: (goalId: string) => Promise<boolean>;
+
+  // Logout / cleanup
+  onLogout: () => Promise<void>;
 }
 
 // ================================
@@ -159,6 +163,8 @@ export const useGoalStore = create<GoalState>()(
             error: null,
             lastFetchedAt: Date.now(),
           });
+
+          await GoalNotificationService.syncGoals();
         } catch (error) {
           console.error("[GoalStore] Fetch Goals Error:", error);
 
@@ -295,6 +301,8 @@ export const useGoalStore = create<GoalState>()(
             error: null,
           }));
 
+          await GoalNotificationService.scheduleGoal(newGoal);
+
           return newGoal;
         } catch (error) {
           console.error("[GoalStore] Create Goal Error:", error);
@@ -357,6 +365,8 @@ export const useGoalStore = create<GoalState>()(
             error: null,
           }));
 
+          await GoalNotificationService.rescheduleGoal(updatedGoal);
+
           return updatedGoal;
         } catch (error) {
           console.error("[GoalStore] Update Goal Error:", error);
@@ -409,6 +419,8 @@ export const useGoalStore = create<GoalState>()(
             error: null,
           }));
 
+          await GoalNotificationService.onGoalDeleted(goalId);
+
           return true;
         } catch (error) {
           console.error("[GoalStore] Delete Goal Error:", error);
@@ -420,6 +432,31 @@ export const useGoalStore = create<GoalState>()(
 
           return false;
         }
+      },
+
+      // ==========================================
+      // Logout — clears in-memory state AND the
+      // persisted "goal-storage" entry in AsyncStorage
+      // ==========================================
+      onLogout: async () => {
+        await GoalNotificationService.cancelAll();
+
+        try {
+          await AsyncStorage.removeItem("goal-storage");
+        } catch (error) {
+          console.error(
+            "[GoalStore] Error clearing goal storage on logout:",
+            error
+          );
+        }
+
+        set({
+          goals: [],
+          selectedGoal: null,
+          loading: false,
+          error: null,
+          lastFetchedAt: null,
+        });
       },
     }),
     {

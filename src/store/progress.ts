@@ -5,18 +5,21 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
 import { Task } from "../types/task";
-import { getTodayDateString } from "../services/notificationService";
+import {
+  getTodayDateString,
+  getTodayRange,
+  getWeekRange,
+  getMonthRange,
+  isValidDateString,
+} from "../utils/date";
 
 // -----------------------------------------------------------------------------
-// API
+// API Configuration
 // -----------------------------------------------------------------------------
 
 const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
-
-const CACHE_TTL = 30_000; // 30 Seconds
-
-const getToken = (): Promise<string | null> =>
-  AsyncStorage.getItem("token");
+const CACHE_TTL = 30_000; // 30 seconds
+const REQUEST_TIMEOUT = 15_000; // 15 seconds
 
 // -----------------------------------------------------------------------------
 // Types
@@ -31,59 +34,54 @@ export interface ProgressSummary {
 }
 
 interface ProgressState {
-  // ---------------------------------------------------------------------------
   // Task Collections
-  // ---------------------------------------------------------------------------
-
   dailyTasks: Task[];
   weeklyTasks: Task[];
   monthlyTasks: Task[];
 
-  // ---------------------------------------------------------------------------
   // Summaries
-  // ---------------------------------------------------------------------------
-
   dailyProgress: ProgressSummary;
   weeklyProgress: ProgressSummary;
   monthlyProgress: ProgressSummary;
 
-  // ---------------------------------------------------------------------------
-  // Store State
-  // ---------------------------------------------------------------------------
+  // Loading States
+  dailyLoading: boolean;
+  weeklyLoading: boolean;
+  monthlyLoading: boolean;
 
-  loading: boolean;
-  error: string | null;
+  // Error States
+  dailyError: string | null;
+  weeklyError: string | null;
+  monthlyError: string | null;
 
-  lastFetchedAt: number | null;
+  // Cache Timestamps
+  dailyLastFetchedAt: number | null;
+  weeklyLastFetchedAt: number | null;
+  monthlyLastFetchedAt: number | null;
+
   storedDay: string | null;
+  loading: boolean;
 
-  // ---------------------------------------------------------------------------
   // Actions
-  // ---------------------------------------------------------------------------
-
   fetchDailyProgress: (force?: boolean) => Promise<void>;
-
   fetchWeeklyProgress: (force?: boolean) => Promise<void>;
-
   fetchMonthlyProgress: (force?: boolean) => Promise<void>;
-
   fetchAllProgress: (force?: boolean) => Promise<void>;
-
-  // Called once by the parent screen (e.g. ProgressScreen) on mount.
-  // If the store already has cached data for today, this resolves
-  // immediately without hitting the network. DayView/WeekView/MonthView
-  // should never call fetch*Progress on mount themselves — only this.
   initializeProgress: () => Promise<void>;
-
-  invalidate: () => void;
-
+  onLogin: () => Promise<void>;
+  invalidate: () => Promise<void>;
+  invalidateDaily: () => Promise<void>;
+  invalidateWeekly: () => Promise<void>;
+  invalidateMonthly: () => Promise<void>;
   resetForNewDayIfNeeded: () => void;
-
   onLogout: () => Promise<void>;
+  clearCache: () => void;
+  // Force refresh specific date range
+  refreshRange: (start: string, end: string) => Promise<Task[]>;
 }
 
 // -----------------------------------------------------------------------------
-// Empty Summary
+// Constants
 // -----------------------------------------------------------------------------
 
 const EMPTY_PROGRESS: ProgressSummary = {
@@ -95,102 +93,23 @@ const EMPTY_PROGRESS: ProgressSummary = {
 };
 
 // -----------------------------------------------------------------------------
-// Date Helpers
-// -----------------------------------------------------------------------------
-
-const formatDate = (date: Date): string =>
-  date.toISOString().split("T")[0];
-
-// -----------------------------------------------------------------------------
-// Daily
-// -----------------------------------------------------------------------------
-
-const getTodayRange = () => {
-  const today = new Date();
-  const date = formatDate(today);
-
-  return {
-    start: date,
-    end: date,
-  };
-};
-
-// -----------------------------------------------------------------------------
-// Weekly
-// Monday -> Sunday
-// -----------------------------------------------------------------------------
-
-const getWeekRange = () => {
-  const today = new Date();
-
-  const day = today.getDay();
-
-  const diff = day === 0 ? -6 : 1 - day;
-
-  const start = new Date(today);
-
-  start.setDate(today.getDate() + diff);
-
-  const end = new Date(start);
-
-  end.setDate(start.getDate() + 6);
-
-  return {
-    start: formatDate(start),
-    end: formatDate(end),
-  };
-};
-
-// -----------------------------------------------------------------------------
-// Monthly
-// -----------------------------------------------------------------------------
-
-const getMonthRange = () => {
-  const today = new Date();
-
-  const start = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    1
-  );
-
-  const end = new Date(
-    today.getFullYear(),
-    today.getMonth() + 1,
-    0
-  );
-
-  return {
-    start: formatDate(start),
-    end: formatDate(end),
-  };
-};
-
-// -----------------------------------------------------------------------------
 // Progress Calculator
 // -----------------------------------------------------------------------------
 
 const calculateProgress = (tasks: Task[]): ProgressSummary => {
   const totalTasks = tasks.length;
-
-  const completedTasks = tasks.filter(
-    (task) => task.completed
-  ).length;
-
+  const completedTasks = tasks.filter((task) => task.completed).length;
   const pendingTasks = totalTasks - completedTasks;
 
   const today = getTodayDateString();
 
+  // taskDate should be in yyyy-MM-dd format
   const overdueTasks = tasks.filter(
-    (task) =>
-      !task.completed &&
-      task.taskDate < today
+    (task) => !task.completed && task.taskDate && task.taskDate < today
   ).length;
 
   const completionRate =
-    totalTasks === 0
-      ? 0
-      : Math.round((completedTasks / totalTasks) * 100);
+    totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
 
   return {
     totalTasks,
@@ -202,32 +121,77 @@ const calculateProgress = (tasks: Task[]): ProgressSummary => {
 };
 
 // -----------------------------------------------------------------------------
-// Internal Helper
+// Internal Helper - Fetch Range Tasks
 // -----------------------------------------------------------------------------
 
-const fetchRangeTasks = async (
-  start: string,
-  end: string
-): Promise<Task[]> => {
-  const token = await getToken();
-
-  const res = await fetch(
-    `${API_URL}/tasks/range?start=${start}&end=${end}`,
-    {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
-    }
-  );
-
-  if (!res.ok) {
-    throw new Error(`Server Error ${res.status}`);
+const fetchRangeTasks = async (start: string, end: string): Promise<Task[]> => {
+  // Validate date formats before sending
+  if (!isValidDateString(start)) {
+    throw new Error(`Invalid start date format: ${start}. Expected yyyy-MM-dd`);
+  }
+  if (!isValidDateString(end)) {
+    throw new Error(`Invalid end date format: ${end}. Expected yyyy-MM-dd`);
   }
 
-  const data = await res.json();
+  const token = await AsyncStorage.getItem("token");
 
-  return Array.isArray(data) ? data : [];
+  if (!token) {
+    throw new Error("No authentication token found");
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
+
+  try {
+    const url = `${API_URL}/tasks/range?start=${start}&end=${end}`;
+    console.log(`[ProgressStore] Fetching tasks: ${url}`);
+
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeoutId);
+
+    if (!res.ok) {
+      if (res.status === 401) {
+        throw new Error("Authentication failed. Please log in again.");
+      }
+      if (res.status === 404) {
+        throw new Error("Tasks endpoint not found");
+      }
+      throw new Error(`Server Error ${res.status}`);
+    }
+
+    const data = await res.json();
+    const tasks = Array.isArray(data) ? data : [];
+
+    // Validate task dates
+    tasks.forEach((task: Task) => {
+      if (task.taskDate && !isValidDateString(task.taskDate)) {
+        console.warn(`[ProgressStore] Invalid task date format: ${task.taskDate}`);
+      }
+    });
+
+    return tasks;
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Request timed out. Please try again.");
+    }
+    throw error;
+  }
 };
+
+// -----------------------------------------------------------------------------
+// Helper - Check if cache is fresh
+// -----------------------------------------------------------------------------
+
+const isFresh = (lastFetchedAt: number | null): boolean =>
+  lastFetchedAt !== null && Date.now() - lastFetchedAt < CACHE_TTL;
 
 // -----------------------------------------------------------------------------
 // Store
@@ -237,320 +201,448 @@ export const useProgressStore = create<ProgressState>()(
   persist(
     (set, get) => ({
       // -----------------------------------------------------------------------
-      // Task Data
+      // Initial State
       // -----------------------------------------------------------------------
 
       dailyTasks: [],
       weeklyTasks: [],
       monthlyTasks: [],
 
-      // -----------------------------------------------------------------------
-      // Progress
-      // -----------------------------------------------------------------------
-
       dailyProgress: EMPTY_PROGRESS,
       weeklyProgress: EMPTY_PROGRESS,
       monthlyProgress: EMPTY_PROGRESS,
 
-      // -----------------------------------------------------------------------
-      // State
-      // -----------------------------------------------------------------------
+      dailyLoading: false,
+      weeklyLoading: false,
+      monthlyLoading: false,
 
-      loading: false,
-      error: null,
+      dailyError: null,
+      weeklyError: null,
+      monthlyError: null,
 
-      lastFetchedAt: null,
+      dailyLastFetchedAt: null,
+      weeklyLastFetchedAt: null,
+      monthlyLastFetchedAt: null,
+
       storedDay: null,
+      loading: false,
 
       // -----------------------------------------------------------------------
-      // Daily Progress
+      // 1. fetchDailyProgress
       // -----------------------------------------------------------------------
 
       fetchDailyProgress: async (force = false) => {
-        get().resetForNewDayIfNeeded();
+        const { dailyLoading, dailyLastFetchedAt } = get();
 
-        const { loading, lastFetchedAt } = get();
-
-        if (loading) return;
-
-        const now = Date.now();
-
-        if (
-          !force &&
-          lastFetchedAt !== null &&
-          now - lastFetchedAt < CACHE_TTL
-        ) {
+        if (dailyLoading) {
+          console.log("[ProgressStore] Daily fetch already in progress");
           return;
         }
 
-        set({
-          loading: true,
-          error: null,
-        });
+        if (!force && isFresh(dailyLastFetchedAt)) {
+          console.log("[ProgressStore] Daily cache is fresh, skipping fetch");
+          return;
+        }
+
+        set({ dailyLoading: true, dailyError: null });
 
         try {
           const range = getTodayRange();
-
-          const tasks = await fetchRangeTasks(
-            range.start,
-            range.end
-          );
+          const tasks = await fetchRangeTasks(range.start, range.end);
 
           set({
             dailyTasks: tasks,
             dailyProgress: calculateProgress(tasks),
-            loading: false,
-            error: null,
-            lastFetchedAt: Date.now(),
-            storedDay: getTodayDateString(),
+            dailyLoading: false,
+            dailyError: null,
+            dailyLastFetchedAt: Date.now(),
           });
-        } catch (err) {
-          console.error("[ProgressStore] Daily Progress:", err);
+
+          console.log(`[ProgressStore] Daily progress fetched: ${tasks.length} tasks`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : "Unable to load daily progress.";
+          console.error("[ProgressStore] Daily Progress Error:", error);
 
           set({
-            loading: false,
-            error: "Unable to load daily progress.",
+            dailyLoading: false,
+            dailyError: errorMessage,
           });
         }
       },
 
       // -----------------------------------------------------------------------
-      // Weekly Progress
+      // 2. fetchWeeklyProgress
       // -----------------------------------------------------------------------
 
       fetchWeeklyProgress: async (force = false) => {
-        get().resetForNewDayIfNeeded();
+        const { weeklyLoading, weeklyLastFetchedAt } = get();
 
-        const { loading, lastFetchedAt } = get();
-
-        if (loading) return;
-
-        const now = Date.now();
-
-        if (
-          !force &&
-          lastFetchedAt !== null &&
-          now - lastFetchedAt < CACHE_TTL
-        ) {
+        if (weeklyLoading) {
+          console.log("[ProgressStore] Weekly fetch already in progress");
           return;
         }
 
-        set({
-          loading: true,
-          error: null,
-        });
+        if (!force && isFresh(weeklyLastFetchedAt)) {
+          console.log("[ProgressStore] Weekly cache is fresh, skipping fetch");
+          return;
+        }
+
+        set({ weeklyLoading: true, weeklyError: null });
 
         try {
           const range = getWeekRange();
-
-          const tasks = await fetchRangeTasks(
-            range.start,
-            range.end
-          );
+          const tasks = await fetchRangeTasks(range.start, range.end);
 
           set({
             weeklyTasks: tasks,
             weeklyProgress: calculateProgress(tasks),
-            loading: false,
-            error: null,
+            weeklyLoading: false,
+            weeklyError: null,
+            weeklyLastFetchedAt: Date.now(),
           });
-        } catch (err) {
-          console.error("[ProgressStore] Weekly Progress:", err);
+
+          console.log(`[ProgressStore] Weekly progress fetched: ${tasks.length} tasks`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : "Unable to load weekly progress.";
+          console.error("[ProgressStore] Weekly Progress Error:", error);
 
           set({
-            loading: false,
-            error: "Unable to load weekly progress.",
+            weeklyLoading: false,
+            weeklyError: errorMessage,
           });
         }
       },
 
       // -----------------------------------------------------------------------
-      // Monthly Progress
+      // 3. fetchMonthlyProgress
       // -----------------------------------------------------------------------
 
       fetchMonthlyProgress: async (force = false) => {
-        get().resetForNewDayIfNeeded();
+        const { monthlyLoading, monthlyLastFetchedAt } = get();
 
-        const { loading, lastFetchedAt } = get();
-
-        if (loading) return;
-
-        const now = Date.now();
-
-        if (
-          !force &&
-          lastFetchedAt !== null &&
-          now - lastFetchedAt < CACHE_TTL
-        ) {
+        if (monthlyLoading) {
+          console.log("[ProgressStore] Monthly fetch already in progress");
           return;
         }
 
-        set({
-          loading: true,
-          error: null,
-        });
+        if (!force && isFresh(monthlyLastFetchedAt)) {
+          console.log("[ProgressStore] Monthly cache is fresh, skipping fetch");
+          return;
+        }
+
+        set({ monthlyLoading: true, monthlyError: null });
 
         try {
           const range = getMonthRange();
-
-          const tasks = await fetchRangeTasks(
-            range.start,
-            range.end
-          );
+          const tasks = await fetchRangeTasks(range.start, range.end);
 
           set({
             monthlyTasks: tasks,
             monthlyProgress: calculateProgress(tasks),
-            loading: false,
-            error: null,
+            monthlyLoading: false,
+            monthlyError: null,
+            monthlyLastFetchedAt: Date.now(),
           });
-        } catch (err) {
-          console.error("[ProgressStore] Monthly Progress:", err);
+
+          console.log(`[ProgressStore] Monthly progress fetched: ${tasks.length} tasks`);
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : "Unable to load monthly progress.";
+          console.error("[ProgressStore] Monthly Progress Error:", error);
 
           set({
-            loading: false,
-            error: "Unable to load monthly progress.",
+            monthlyLoading: false,
+            monthlyError: errorMessage,
           });
         }
       },
 
       // -----------------------------------------------------------------------
-      // Fetch Everything
+      // 4. fetchAllProgress
       // -----------------------------------------------------------------------
 
       fetchAllProgress: async (force = false) => {
+        // Check for new day before anything else
         get().resetForNewDayIfNeeded();
 
-        const { loading, lastFetchedAt } = get();
-
-        if (loading) return;
-
-        const now = Date.now();
-
-        if (
-          !force &&
-          lastFetchedAt !== null &&
-          now - lastFetchedAt < CACHE_TTL
-        ) {
+        if (get().loading) {
+          console.log("[ProgressStore] Fetch all already in progress, skipping");
           return;
         }
 
-        set({
-          loading: true,
-          error: null,
-        });
+        set({ loading: true });
 
         try {
-          const dailyRange = getTodayRange();
-          const weeklyRange = getWeekRange();
-          const monthlyRange = getMonthRange();
+          console.log("[ProgressStore] Fetching all progress...");
 
-          const [
-            dailyTasks,
-            weeklyTasks,
-            monthlyTasks,
-          ] = await Promise.all([
-            fetchRangeTasks(
-              dailyRange.start,
-              dailyRange.end
-            ),
-            fetchRangeTasks(
-              weeklyRange.start,
-              weeklyRange.end
-            ),
-            fetchRangeTasks(
-              monthlyRange.start,
-              monthlyRange.end
-            ),
+          const results = await Promise.allSettled([
+            get().fetchDailyProgress(force),
+            get().fetchWeeklyProgress(force),
+            get().fetchMonthlyProgress(force),
           ]);
 
-          set({
-            dailyTasks,
-            weeklyTasks,
-            monthlyTasks,
-
-            dailyProgress: calculateProgress(dailyTasks),
-            weeklyProgress: calculateProgress(weeklyTasks),
-            monthlyProgress: calculateProgress(monthlyTasks),
-
-            loading: false,
-            error: null,
-
-            lastFetchedAt: Date.now(),
-            storedDay: getTodayDateString(),
+          const names = ["Daily", "Weekly", "Monthly"];
+          results.forEach((result, index) => {
+            if (result.status === "rejected") {
+              console.error(`[ProgressStore] ${names[index]} fetch failed:`, result.reason);
+            } else {
+              console.log(`[ProgressStore] ${names[index]} fetch completed`);
+            }
           });
-        } catch (err) {
-          console.error(
-            "[ProgressStore] Fetch All Progress:",
-            err
-          );
 
-          set({
-            loading: false,
-            error: "Unable to load progress.",
-          });
+          console.log("[ProgressStore] All progress fetched");
+        } catch (error) {
+          console.error("[ProgressStore] Fetch all progress failed:", error);
+        } finally {
+          set({ loading: false });
         }
       },
 
       // -----------------------------------------------------------------------
-      // Initialize Progress
-      //
-      // This is the ONLY entry point screens should call on mount.
-      // - If the store already has fresh cached data (persisted via
-      //   AsyncStorage and rehydrated), it resolves immediately with
-      //   no network call.
-      // - If there's no cache yet (first app open, logout->login,
-      //   or a new calendar day wiped it), it fetches once.
-      //
-      // DayView / WeekView / MonthView must NOT call fetch*Progress
-      // themselves — only the parent ProgressScreen calls this, once.
+      // 5. initializeProgress
       // -----------------------------------------------------------------------
 
       initializeProgress: async () => {
-        get().resetForNewDayIfNeeded();
+        console.log("[ProgressStore] Initializing progress...");
 
-        const { dailyTasks, weeklyTasks, monthlyTasks, lastFetchedAt, loading } =
-          get();
+        try {
+          get().resetForNewDayIfNeeded();
 
-        if (loading) return;
+          const {
+            dailyLastFetchedAt,
+            weeklyLastFetchedAt,
+            monthlyLastFetchedAt,
+          } = get();
 
-        const hasCache =
-          dailyTasks.length > 0 ||
-          weeklyTasks.length > 0 ||
-          monthlyTasks.length > 0;
+          const allFresh =
+            isFresh(dailyLastFetchedAt) &&
+            isFresh(weeklyLastFetchedAt) &&
+            isFresh(monthlyLastFetchedAt);
 
-        if (hasCache && lastFetchedAt !== null) {
-          // Cache exists for today already — nothing to do.
-          return;
+          if (allFresh) {
+            console.log("[ProgressStore] All progress data is fresh, using cache");
+            return;
+          }
+
+          console.log("[ProgressStore] Cache expired or missing, fetching all progress");
+          await get().fetchAllProgress(false);
+        } catch (error) {
+          console.error("[ProgressStore] Failed to initialize progress:", error);
+          // Don't throw - let components handle errors via per-range error flags
         }
-
-        await get().fetchAllProgress();
       },
 
       // -----------------------------------------------------------------------
-      // Invalidate Cache
+      // 6. onLogin
       // -----------------------------------------------------------------------
 
-      invalidate: () => {
+      onLogin: async () => {
+        console.log("[ProgressStore] User logged in, clearing previous cache");
+
         set({
-          lastFetchedAt: null,
+          dailyTasks: [],
+          weeklyTasks: [],
+          monthlyTasks: [],
+
+          dailyProgress: EMPTY_PROGRESS,
+          weeklyProgress: EMPTY_PROGRESS,
+          monthlyProgress: EMPTY_PROGRESS,
+
+          dailyError: null,
+          weeklyError: null,
+          monthlyError: null,
+
+          dailyLastFetchedAt: null,
+          weeklyLastFetchedAt: null,
+          monthlyLastFetchedAt: null,
+
+          storedDay: getTodayDateString(),
+          loading: false,
         });
 
-        get().fetchAllProgress(true);
+        await get().fetchAllProgress(true);
+        console.log("[ProgressStore] Progress initialized after login");
       },
 
       // -----------------------------------------------------------------------
-      // Reset Progress For New Day
+      // 7. invalidate - Invalidate ALL cache
+      //
+      // This is the single entry point that useTaskStore calls (via a
+      // subscription, see task.ts) whenever tasks change on the backend.
+      // It clears local progress state and forces a fresh fetch of
+      // daily/weekly/monthly data from the database.
+      // -----------------------------------------------------------------------
+
+      invalidate: async () => {
+        console.log("[ProgressStore] Invalidating ALL cache...");
+
+        // Clear all cached data immediately
+        set({
+          dailyTasks: [],
+          weeklyTasks: [],
+          monthlyTasks: [],
+
+          dailyProgress: EMPTY_PROGRESS,
+          weeklyProgress: EMPTY_PROGRESS,
+          monthlyProgress: EMPTY_PROGRESS,
+
+          dailyLastFetchedAt: null,
+          weeklyLastFetchedAt: null,
+          monthlyLastFetchedAt: null,
+
+          // Reset errors on invalidation
+          dailyError: null,
+          weeklyError: null,
+          monthlyError: null,
+        });
+
+        // Force refresh all progress
+        await get().fetchAllProgress(true);
+        console.log("[ProgressStore] All cache invalidated and refreshed");
+      },
+
+      // -----------------------------------------------------------------------
+      // 8. invalidateDaily - Invalidate ONLY daily cache
+      // -----------------------------------------------------------------------
+
+      invalidateDaily: async () => {
+        console.log("[ProgressStore] Invalidating daily cache...");
+
+        set({
+          dailyTasks: [],
+          dailyProgress: EMPTY_PROGRESS,
+          dailyLastFetchedAt: null,
+          dailyError: null,
+        });
+
+        await get().fetchDailyProgress(true);
+        console.log("[ProgressStore] Daily cache invalidated and refreshed");
+      },
+
+      // -----------------------------------------------------------------------
+      // 9. invalidateWeekly - Invalidate ONLY weekly cache
+      // -----------------------------------------------------------------------
+
+      invalidateWeekly: async () => {
+        console.log("[ProgressStore] Invalidating weekly cache...");
+
+        set({
+          weeklyTasks: [],
+          weeklyProgress: EMPTY_PROGRESS,
+          weeklyLastFetchedAt: null,
+          weeklyError: null,
+        });
+
+        await get().fetchWeeklyProgress(true);
+        console.log("[ProgressStore] Weekly cache invalidated and refreshed");
+      },
+
+      // -----------------------------------------------------------------------
+      // 10. invalidateMonthly - Invalidate ONLY monthly cache
+      // -----------------------------------------------------------------------
+
+      invalidateMonthly: async () => {
+        console.log("[ProgressStore] Invalidating monthly cache...");
+
+        set({
+          monthlyTasks: [],
+          monthlyProgress: EMPTY_PROGRESS,
+          monthlyLastFetchedAt: null,
+          monthlyError: null,
+        });
+
+        await get().fetchMonthlyProgress(true);
+        console.log("[ProgressStore] Monthly cache invalidated and refreshed");
+      },
+
+      // -----------------------------------------------------------------------
+      // 11. refreshRange - Fetch a specific date range and update cache
+      // -----------------------------------------------------------------------
+
+      refreshRange: async (start: string, end: string): Promise<Task[]> => {
+        console.log(`[ProgressStore] Refreshing range: ${start} → ${end}`);
+
+        try {
+          const tasks = await fetchRangeTasks(start, end);
+
+          // Check which range this falls into and update accordingly
+          const today = getTodayDateString();
+          const weekRange = getWeekRange();
+          const monthRange = getMonthRange();
+
+          // If it's today's range, update daily
+          if (start === today && end === today) {
+            set({
+              dailyTasks: tasks,
+              dailyProgress: calculateProgress(tasks),
+              dailyLastFetchedAt: Date.now(),
+              dailyError: null,
+            });
+          }
+
+          // If it's within the week range, update weekly
+          if (start === weekRange.start && end === weekRange.end) {
+            set({
+              weeklyTasks: tasks,
+              weeklyProgress: calculateProgress(tasks),
+              weeklyLastFetchedAt: Date.now(),
+              weeklyError: null,
+            });
+          }
+
+          // If it's within the month range, update monthly
+          if (start === monthRange.start && end === monthRange.end) {
+            set({
+              monthlyTasks: tasks,
+              monthlyProgress: calculateProgress(tasks),
+              monthlyLastFetchedAt: Date.now(),
+              monthlyError: null,
+            });
+          }
+
+          return tasks;
+        } catch (error) {
+          console.error("[ProgressStore] Refresh range failed:", error);
+          throw error;
+        }
+      },
+
+      // -----------------------------------------------------------------------
+      // 12. clearCache - Clear ALL cache without refetching
+      // -----------------------------------------------------------------------
+
+      clearCache: () => {
+        console.log("[ProgressStore] Clearing all cache without refetching");
+
+        set({
+          dailyTasks: [],
+          weeklyTasks: [],
+          monthlyTasks: [],
+
+          dailyProgress: EMPTY_PROGRESS,
+          weeklyProgress: EMPTY_PROGRESS,
+          monthlyProgress: EMPTY_PROGRESS,
+
+          dailyLastFetchedAt: null,
+          weeklyLastFetchedAt: null,
+          monthlyLastFetchedAt: null,
+
+          dailyError: null,
+          weeklyError: null,
+          monthlyError: null,
+        });
+      },
+
+      // -----------------------------------------------------------------------
+      // 13. resetForNewDayIfNeeded
       // -----------------------------------------------------------------------
 
       resetForNewDayIfNeeded: () => {
         const today = getTodayDateString();
-
         const { storedDay } = get();
 
         if (storedDay !== today) {
           console.log(
-            `[ProgressStore] New day detected (was "${storedDay}", now "${today}")`
+            `[ProgressStore] New day detected: "${storedDay}" → "${today}"`
           );
 
           set({
@@ -562,17 +654,31 @@ export const useProgressStore = create<ProgressState>()(
             weeklyProgress: EMPTY_PROGRESS,
             monthlyProgress: EMPTY_PROGRESS,
 
-            lastFetchedAt: null,
+            dailyLastFetchedAt: null,
+            weeklyLastFetchedAt: null,
+            monthlyLastFetchedAt: null,
+
             storedDay: today,
           });
         }
       },
 
       // -----------------------------------------------------------------------
-      // Logout
+      // 14. onLogout
       // -----------------------------------------------------------------------
 
       onLogout: async () => {
+        console.log("[ProgressStore] User logging out, clearing storage");
+
+        try {
+          await AsyncStorage.removeItem("progress-storage");
+        } catch (error) {
+          console.error(
+            "[ProgressStore] Error clearing progress storage on logout:",
+            error
+          );
+        }
+
         set({
           dailyTasks: [],
           weeklyTasks: [],
@@ -582,17 +688,27 @@ export const useProgressStore = create<ProgressState>()(
           weeklyProgress: EMPTY_PROGRESS,
           monthlyProgress: EMPTY_PROGRESS,
 
-          loading: false,
-          error: null,
+          dailyLoading: false,
+          weeklyLoading: false,
+          monthlyLoading: false,
 
-          lastFetchedAt: null,
+          dailyError: null,
+          weeklyError: null,
+          monthlyError: null,
+
+          dailyLastFetchedAt: null,
+          weeklyLastFetchedAt: null,
+          monthlyLastFetchedAt: null,
+
           storedDay: null,
+          loading: false,
         });
+
+        console.log("[ProgressStore] Progress store cleared on logout");
       },
     }),
     {
       name: "progress-storage",
-
       storage: createJSONStorage(() => AsyncStorage),
 
       partialize: (state) => ({
@@ -604,7 +720,10 @@ export const useProgressStore = create<ProgressState>()(
         weeklyProgress: state.weeklyProgress,
         monthlyProgress: state.monthlyProgress,
 
-        lastFetchedAt: state.lastFetchedAt,
+        dailyLastFetchedAt: state.dailyLastFetchedAt,
+        weeklyLastFetchedAt: state.weeklyLastFetchedAt,
+        monthlyLastFetchedAt: state.monthlyLastFetchedAt,
+
         storedDay: state.storedDay,
       }),
 
@@ -615,7 +734,7 @@ export const useProgressStore = create<ProgressState>()(
 
         if (state.storedDay !== today) {
           console.log(
-            `[ProgressStore] Rehydrated stale cache (${state.storedDay}) -> ${today}`
+            `[ProgressStore] Rehydrated stale cache: ${state.storedDay} → ${today}`
           );
 
           state.dailyTasks = [];
@@ -626,8 +745,13 @@ export const useProgressStore = create<ProgressState>()(
           state.weeklyProgress = EMPTY_PROGRESS;
           state.monthlyProgress = EMPTY_PROGRESS;
 
-          state.lastFetchedAt = null;
+          state.dailyLastFetchedAt = null;
+          state.weeklyLastFetchedAt = null;
+          state.monthlyLastFetchedAt = null;
+
           state.storedDay = today;
+        } else {
+          console.log("[ProgressStore] Rehydrated valid cache");
         }
       },
     }

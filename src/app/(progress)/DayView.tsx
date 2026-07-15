@@ -1,11 +1,10 @@
 // DayView.tsx
 
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
   StyleSheet,
-  FlatList,
   TouchableOpacity,
 } from "react-native";
 
@@ -13,6 +12,7 @@ import { Ionicons } from "@expo/vector-icons";
 
 import { Task } from "../../types/task";
 import { useProgressStore } from "../../store/progress";
+import { getTodayDateString, formatDate } from "../../utils/date";
 
 interface DayViewProps {
   date: string;
@@ -64,55 +64,122 @@ export default function DayView({
 }: DayViewProps) {
   const C = theme === "dark" ? DARK : BRIGHT;
 
-  // NOTE: DayView no longer fetches data itself.
-  // Fetching is owned exclusively by ProgressScreen via
-  // useProgressStore.getState().initializeProgress().
-  // This component only reads from the store.
+  // Get today's date in the correct format using our utility
+  const today = getTodayDateString();
+  const isToday = date === today;
+
+  // ── Today's data comes straight from the progress store ───────────────────
   const {
     dailyTasks,
     dailyProgress,
-    loading,
-    error,
-    fetchDailyProgress, // still exposed for manual retry, not auto-called
+    dailyLoading,
+    dailyError,
+    fetchDailyProgress,
+    refreshRange,
   } = useProgressStore();
 
-  const dayTasks = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
-    if (date === today) {
-      return dailyTasks;
-    }
-    return dailyTasks.filter((task) => task.taskDate === date);
-  }, [dailyTasks, date]);
+  // ── Non-today dates are fetched on demand into local state ────────────────
+  // The progress store's daily/weekly/monthly caches only ever hold data for
+  // today/this-week/this-month, so viewing an arbitrary past or future date
+  // needs its own fetch. refreshRange() hits the same /tasks/range endpoint
+  // but only writes into the store's daily/weekly/monthly slots when the
+  // range matches one of those exactly — for a single arbitrary date it
+  // just returns the tasks, which we keep here locally.
+  const [rangeTasks, setRangeTasks] = useState<Task[]>([]);
+  const [rangeLoading, setRangeLoading] = useState(false);
+  const [rangeError, setRangeError] = useState<string | null>(null);
 
+  // Guards against a stale response overwriting state if `date` changes
+  // again before the previous fetch resolves.
+  const requestIdRef = useRef(0);
+
+  const loadRangeForDate = (targetDate: string) => {
+    const requestId = ++requestIdRef.current;
+    setRangeLoading(true);
+    setRangeError(null);
+
+    refreshRange(targetDate, targetDate)
+      .then((tasks) => {
+        if (requestIdRef.current !== requestId) return; // stale response
+        setRangeTasks(tasks);
+        setRangeLoading(false);
+      })
+      .catch((err) => {
+        if (requestIdRef.current !== requestId) return; // stale response
+        setRangeError(
+          err instanceof Error ? err.message : "Unable to load tasks for this day."
+        );
+        setRangeLoading(false);
+      });
+  };
+
+  useEffect(() => {
+    if (isToday) {
+      // Today is handled by the shared daily progress slice; make sure it's
+      // populated/fresh.
+      fetchDailyProgress();
+      return;
+    }
+
+    loadRangeForDate(date);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date, isToday]);
+
+  // ── Unified view of tasks/loading/error for the selected date ─────────────
+  const dayTasks = isToday ? dailyTasks : rangeTasks;
+  const loading = isToday ? dailyLoading : rangeLoading;
+  const error = isToday ? dailyError : rangeError;
+
+  // Sort tasks by time
   const sortedTasks = useMemo(() => {
     return [...dayTasks].sort((a, b) => {
       return a.taskTime.localeCompare(b.taskTime);
     });
   }, [dayTasks]);
 
+  // Calculate progress for the selected day
   const dayProgressData = useMemo(() => {
-    const today = new Date().toISOString().split('T')[0];
-    if (date === today) {
+    // If selected date is today, use the store's progress summary
+    if (isToday) {
       return {
         total: dailyProgress.totalTasks,
         completed: dailyProgress.completedTasks,
         pending: dailyProgress.pendingTasks,
+        overdue: dailyProgress.overdueTasks,
         completionRate: dailyProgress.completionRate,
       };
     }
+
+    // For other dates, calculate from the fetched range tasks
     const total = dayTasks.length;
     const completed = dayTasks.filter((task) => task.completed).length;
     const pending = total - completed;
+
+    // Check overdue tasks for this specific date
+    const overdue = dayTasks.filter(
+      (task) => !task.completed && task.taskDate < today
+    ).length;
+
     const percentage = total === 0 ? 0 : Math.round((completed / total) * 100);
+
     return {
       total,
       completed,
       pending,
+      overdue,
       completionRate: percentage,
     };
-  }, [dayTasks, dailyProgress, date]);
+  }, [dayTasks, dailyProgress, isToday, today]);
 
   const isEmpty = sortedTasks.length === 0;
+
+  const handleRetry = () => {
+    if (isToday) {
+      fetchDailyProgress(true);
+    } else {
+      loadRangeForDate(date);
+    }
+  };
 
   const getPriorityColor = (priority: string) => {
     switch (priority) {
@@ -127,21 +194,22 @@ export default function DayView({
     }
   };
 
-  const formatDate = (dateString: string) => {
+  const formatDisplayDate = (dateString: string) => {
+    // Parse date in local time to avoid timezone issues
     const [year, month, day] = dateString.split('-').map(Number);
-    const dateObj = new Date(Date.UTC(year, month - 1, day));
+    const dateObj = new Date(year, month - 1, day);
     return dateObj.toLocaleDateString("en-US", {
       weekday: "long",
       year: "numeric",
       month: "long",
       day: "numeric",
-      timeZone: "UTC",
     });
   };
 
-  const renderTask = ({ item }: { item: Task }) => {
+  const renderTask = (item: Task) => {
     return (
       <View
+        key={item.id.toString()}
         style={[
           styles.taskCard,
           {
@@ -214,6 +282,7 @@ export default function DayView({
     );
   };
 
+  // Loading state
   if (loading) {
     return (
       <View
@@ -234,7 +303,7 @@ export default function DayView({
           ]}
         >
           <Text style={[styles.date, { color: C.text }]}>
-            {formatDate(date)}
+            {formatDisplayDate(date)}
           </Text>
           <View style={styles.loadingContainer}>
             <Text style={[styles.loadingText, { color: C.secondary }]}>
@@ -246,6 +315,7 @@ export default function DayView({
     );
   }
 
+  // Error state with retry
   if (error) {
     return (
       <View
@@ -266,7 +336,7 @@ export default function DayView({
           ]}
         >
           <Text style={[styles.date, { color: C.text }]}>
-            {formatDate(date)}
+            {formatDisplayDate(date)}
           </Text>
           <View style={styles.errorContainer}>
             <Ionicons name="alert-circle-outline" size={40} color={C.high} />
@@ -280,7 +350,7 @@ export default function DayView({
                   backgroundColor: C.accent,
                 },
               ]}
-              onPress={() => fetchDailyProgress(true)}
+              onPress={handleRetry}
             >
               <Text style={styles.retryText}>Retry</Text>
             </TouchableOpacity>
@@ -290,6 +360,7 @@ export default function DayView({
     );
   }
 
+  // Main view
   return (
     <View
       style={[
@@ -316,7 +387,7 @@ export default function DayView({
             },
           ]}
         >
-          {formatDate(date)}
+          {formatDisplayDate(date)}
         </Text>
 
         <View style={styles.statsRow}>
@@ -324,7 +395,6 @@ export default function DayView({
             <Text style={[styles.statValue, { color: C.text }]}>
               {dayProgressData.total}
             </Text>
-
             <Text style={[styles.statLabel, { color: C.secondary }]}>
               Total
             </Text>
@@ -334,7 +404,6 @@ export default function DayView({
             <Text style={[styles.statValue, { color: C.success }]}>
               {dayProgressData.completed}
             </Text>
-
             <Text style={[styles.statLabel, { color: C.secondary }]}>
               Completed
             </Text>
@@ -344,14 +413,22 @@ export default function DayView({
             <Text style={[styles.statValue, { color: C.high }]}>
               {dayProgressData.pending}
             </Text>
-
             <Text style={[styles.statLabel, { color: C.secondary }]}>
               Pending
             </Text>
           </View>
+
+          <View style={styles.statItem}>
+            <Text style={[styles.statValue, { color: C.accent }]}>
+              {dayProgressData.overdue || 0}
+            </Text>
+            <Text style={[styles.statLabel, { color: C.secondary }]}>
+              Overdue
+            </Text>
+          </View>
         </View>
 
-        <View style={styles.progressBackground}>
+        <View style={[styles.progressBackground, { backgroundColor: C.border }]}>
           <View
             style={[
               styles.progressFill,
@@ -378,7 +455,6 @@ export default function DayView({
       {isEmpty ? (
         <View style={styles.emptyContainer}>
           <Ionicons name="calendar-outline" size={60} color={C.secondary} />
-
           <Text
             style={[
               styles.emptyTitle,
@@ -389,7 +465,6 @@ export default function DayView({
           >
             No Tasks
           </Text>
-
           <Text
             style={[
               styles.emptySubtitle,
@@ -402,15 +477,14 @@ export default function DayView({
           </Text>
         </View>
       ) : (
-        <FlatList
-          data={sortedTasks}
-          keyExtractor={(item) => item.id.toString()}
-          renderItem={renderTask}
-          contentContainerStyle={{
-            paddingBottom: 80,
-          }}
-          showsVerticalScrollIndicator={false}
-        />
+        // Rendered with a plain map (not FlatList) because DayView already
+        // lives inside HistoryScreen's outer ScrollView. Nesting a
+        // VirtualizedList-backed FlatList inside a same-orientation
+        // ScrollView breaks windowing and triggers an RN warning — since a
+        // single day's task list is short, virtualization isn't needed here.
+        <View style={styles.taskList}>
+          {sortedTasks.map((item) => renderTask(item))}
+        </View>
       )}
     </View>
   );
@@ -458,7 +532,6 @@ const styles = StyleSheet.create({
 
   progressBackground: {
     height: 10,
-    backgroundColor: "#2E2E32",
     borderRadius: 20,
     overflow: "hidden",
     marginBottom: 10,
@@ -492,6 +565,10 @@ const styles = StyleSheet.create({
     textAlign: "center",
     fontSize: 14,
     lineHeight: 22,
+  },
+
+  taskList: {
+    paddingBottom: 80,
   },
 
   taskCard: {

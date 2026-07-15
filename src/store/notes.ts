@@ -2,6 +2,7 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import axios from "axios";
+import NoteNotificationService from "../notifications/note/NoteNotificationService";
 
 const API_URL = "https://life-os-backend-1ozl.onrender.com/api/notes";
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -21,8 +22,9 @@ interface NotesState {
   getAllNoteDates: (token: string | null) => Promise<string[]>;
   getNote: (date: string, token: string | null) => Promise<NoteEntry>;
   saveNote: (date: string, content: string, token: string | null) => Promise<NoteEntry>;
-  clearNote: (date: string) => void;
-  clearAll: () => void;
+  clearNote: (date: string) => Promise<void>;
+  clearAll: () => Promise<void>;
+  onLogout: () => Promise<void>;
 }
 
 function isEntryFresh(entry?: NoteEntry): entry is NoteEntry {
@@ -129,6 +131,8 @@ export const useNotesStore = create<NotesState>()(
           },
         };
 
+        const isNewNote = !existing?.id;
+
         let entry: NoteEntry;
 
         if (existing?.id) {
@@ -167,10 +171,26 @@ export const useNotesStore = create<NotesState>()(
             : [...state.noteDates, date],
         }));
 
+        const note = {
+          id: entry.id!,
+          content: entry.content,
+          noteDate: date,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+
+        if (isNewNote) {
+          await NoteNotificationService.scheduleNote(note);
+        } else {
+          await NoteNotificationService.rescheduleNote(note);
+        }
+
         return entry;
       },
 
-      clearNote: (date) => {
+      clearNote: async (date) => {
+        await NoteNotificationService.onNoteDeleted(date);
+
         set((state) => {
           const notes = { ...state.notes };
           delete notes[date];
@@ -181,7 +201,47 @@ export const useNotesStore = create<NotesState>()(
         });
       },
 
-      clearAll: () => set({ notes: {}, noteDates: [] }),
+      clearAll: async () => {
+        const notes = get().notes;
+        for (const date of Object.keys(notes)) {
+          await NoteNotificationService.onNoteDeleted(date);
+        }
+
+        set({ notes: {}, noteDates: [] });
+      },
+
+      // ==========================================
+      // Logout — clears in-memory state AND the
+      // persisted "notes-cache-storage" entry in AsyncStorage
+      // ==========================================
+      onLogout: async () => {
+        const notes = get().notes;
+
+        // NoteNotificationService.cancelAll expects full Note objects; convert cached NoteEntry -> Note
+        const noteArray = Object.entries(notes).map(([date, entry]) => ({
+          id: entry.id,
+          content: entry.content,
+          noteDate: date,
+          createdAt: new Date(entry.cachedAt).toISOString(),
+          updatedAt: new Date(entry.cachedAt).toISOString(),
+        }));
+
+        await NoteNotificationService.cancelAll(noteArray as any);
+
+        try {
+          await AsyncStorage.removeItem("notes-cache-storage");
+        } catch (error) {
+          console.error(
+            "[NotesStore] Error clearing notes storage on logout:",
+            error
+          );
+        }
+
+        set({
+          notes: {},
+          noteDates: [],
+        });
+      },
     }),
     {
       name: "notes-cache-storage",

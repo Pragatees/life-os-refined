@@ -246,7 +246,7 @@ export default function HistoryScreen({ theme = "dark", onThemeChange }: History
 
         <View style={styles.headerCenter}>
           <Text style={[styles.eyebrow, { color: C.accent }]}>OVERVIEW</Text>
-          <Text style={[styles.title, { color: C.textPrimary }]}>Task History</Text>
+          <Text style={[styles.title, { color: C.textPrimary }]}>Progress History</Text>
           <Text style={[styles.subtitle, { color: C.textSecondary }]}>{currentMonth}</Text>
         </View>
 

@@ -6,6 +6,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 
 import { useProgressStore } from "../../store/progress";
+import { getTodayDateString, formatDate, formatDateDisplay } from "../../utils/date";
 
 // ─── Theme Tokens ───────────────────────────────────────────────
 type ThemeTokens = {
@@ -61,39 +62,44 @@ export default function WeekView({ theme = "dark" }: WeekViewProps) {
   const C = theme === "bright" ? BRIGHT : DARK;
 
   // ── Progress Store ──────────────────────────────────────────────
-  // NOTE: WeekView no longer fetches data itself. Fetching is owned
-  // exclusively by the parent ProgressScreen via
-  // useProgressStore.getState().initializeProgress(). This component
-  // only reads from the store.
+  // Get weekly-specific state from the store
   const {
     weeklyTasks,
     weeklyProgress,
-    loading,
-    error,
-    fetchWeeklyProgress, // still exposed for manual retry, not auto-called
+    weeklyLoading: loading,
+    weeklyError: error,
+    fetchWeeklyProgress,
   } = useProgressStore();
+
+  // Get today's date in the correct format
+  const today = getTodayDateString();
 
   // ── Daily Breakdown (computed from weeklyTasks) ──────────────
   const dailyBreakdown = useMemo(() => {
-    const groups: Record<string, { total: number; completed: number }> = {};
+    const groups: Record<string, { total: number; completed: number; overdue: number }> = {};
 
     weeklyTasks.forEach((task) => {
       if (!groups[task.taskDate]) {
-        groups[task.taskDate] = { total: 0, completed: 0 };
+        groups[task.taskDate] = { total: 0, completed: 0, overdue: 0 };
       }
       groups[task.taskDate].total += 1;
       if (task.completed) {
         groups[task.taskDate].completed += 1;
       }
+      // Check if task is overdue (not completed and date is in the past)
+      if (!task.completed && task.taskDate < today) {
+        groups[task.taskDate].overdue += 1;
+      }
     });
 
-    return Object.entries(groups).map(([date, { total, completed }]) => ({
+    return Object.entries(groups).map(([date, { total, completed, overdue }]) => ({
       date,
       total,
       completed,
+      overdue,
       percentage: total === 0 ? 0 : Math.round((completed / total) * 100),
     }));
-  }, [weeklyTasks]);
+  }, [weeklyTasks, today]);
 
   // ── Sorted days ──────────────────────────────────────────────
   const sortedDays = useMemo(() => {
@@ -108,15 +114,46 @@ export default function WeekView({ theme = "dark" }: WeekViewProps) {
   }, [dailyBreakdown]);
 
   // ── Best & Worst Day ─────────────────────────────────────────
+  // Rules:
+  // 1. Only days that actually had tasks scheduled are eligible — an empty
+  //    day isn't a "best" or "worst" day, it's just a non-event.
+  // 2. Best day = highest completion %. If multiple days tie (e.g. Monday
+  //    3/3 and Tuesday 3/3 are both 100%), the most recent of the tied days
+  //    wins, since that's the freshest evidence of good performance.
+  // 3. Worst day = lowest completion %. Ties go to the earliest of the tied
+  //    days.
+  // 4. If there's no day that's genuinely distinct from the best day (only
+  //    one day has data, or every day is tied at the same percentage),
+  //    there is no meaningful "worst" day — it's left as null and the UI
+  //    renders nothing for it, rather than duplicating the best day or
+  //    picking an arbitrary one.
   const { bestDay, worstDay } = useMemo(() => {
-    if (dailyBreakdown.length === 0) {
+    const daysWithTasks = dailyBreakdown.filter((day) => day.total > 0);
+
+    if (daysWithTasks.length === 0) {
       return { bestDay: null, worstDay: null };
     }
-    const sorted = [...dailyBreakdown].sort((a, b) => b.percentage - a.percentage);
-    return {
-      bestDay: sorted[0],
-      worstDay: sorted[sorted.length - 1],
-    };
+
+    const maxPercentage = Math.max(...daysWithTasks.map((d) => d.percentage));
+    const minPercentage = Math.min(...daysWithTasks.map((d) => d.percentage));
+
+    const bestCandidates = daysWithTasks.filter((d) => d.percentage === maxPercentage);
+    const best = bestCandidates.reduce((latest, day) =>
+      day.date > latest.date ? day : latest
+    );
+
+    const worstCandidates = daysWithTasks.filter((d) => d.percentage === minPercentage);
+    const worst = worstCandidates.reduce((earliest, day) =>
+      day.date < earliest.date ? day : earliest
+    );
+
+    // No distinct worst day: either only one day of data, or every day tied
+    // at the same percentage (so "worst" would just be a duplicate of "best").
+    if (daysWithTasks.length < 2 || best.date === worst.date) {
+      return { bestDay: best, worstDay: null };
+    }
+
+    return { bestDay: best, worstDay: worst };
   }, [dailyBreakdown]);
 
   const isEmpty = weeklyTasks.length === 0;
@@ -128,30 +165,37 @@ export default function WeekView({ theme = "dark" }: WeekViewProps) {
     return C.priorityHigh;
   };
 
-  const formatDate = (dateString: string) => {
+  const formatDisplayDate = (dateString: string) => {
+    // Parse date in local time to avoid timezone issues
     const [year, month, day] = dateString.split('-').map(Number);
-    const dateObj = new Date(Date.UTC(year, month - 1, day));
+    const dateObj = new Date(year, month - 1, day);
     return dateObj.toLocaleDateString("en-US", {
       weekday: "short",
       month: "short",
       day: "numeric",
-      timeZone: "UTC",
     });
   };
 
   // ── Render Day ──────────────────────────────────────────────
-  const renderDay = ({ item }: { item: { date: string; total: number; completed: number; percentage: number } }) => {
+  const renderDay = ({ item }: { item: { date: string; total: number; completed: number; overdue: number; percentage: number } }) => {
     const color = getStatusColor(item.percentage);
     const clampedPct = Math.max(0, Math.min(100, item.percentage));
 
-    const icon =
-      item.percentage === 100
-        ? "trophy"
-        : item.percentage >= 80
-        ? "checkmark-circle"
-        : item.percentage >= 50
-        ? "time"
-        : "close-circle";
+    let icon = "close-circle";
+    let iconColor = C.priorityHigh;
+    
+    if (item.percentage === 100) {
+      icon = "trophy";
+      iconColor = C.priorityLow;
+    } else if (item.percentage >= 80) {
+      icon = "checkmark-circle";
+      iconColor = C.priorityLow;
+    } else if (item.percentage >= 50) {
+      icon = "time";
+      iconColor = C.priorityMed;
+    }
+
+    const isToday = item.date === today;
 
     return (
       <View
@@ -159,7 +203,8 @@ export default function WeekView({ theme = "dark" }: WeekViewProps) {
           styles.dayCard,
           {
             backgroundColor: C.surface,
-            borderColor: C.border,
+            borderColor: isToday ? C.accent : C.border,
+            borderWidth: isToday ? 2 : 1,
             shadowColor: C.shadowDark,
           },
         ]}
@@ -167,14 +212,22 @@ export default function WeekView({ theme = "dark" }: WeekViewProps) {
         <View style={styles.dayHeader}>
           <View style={styles.dayHeaderLeft}>
             <View style={[styles.dayIconWrap, { backgroundColor: C.surfaceAlt }]}>
-              <Ionicons name={icon} size={18} color={color} />
+              <Ionicons name={icon as any} size={18} color={iconColor} />
             </View>
             <View>
               <Text style={[styles.dayDate, { color: C.textPrimary }]}>
-                {formatDate(item.date)}
+                {formatDisplayDate(item.date)}
+                {isToday && (
+                  <Text style={[styles.todayBadge, { color: C.accent }]}> • Today</Text>
+                )}
               </Text>
               <Text style={[styles.dayStats, { color: C.textSecondary }]}>
                 {item.completed}/{item.total} Completed
+                {item.overdue > 0 && (
+                  <Text style={[styles.overdueText, { color: C.priorityHigh }]}>
+                    {' '}• {item.overdue} Overdue
+                  </Text>
+                )}
               </Text>
             </View>
           </View>
@@ -288,6 +341,13 @@ export default function WeekView({ theme = "dark" }: WeekViewProps) {
             </Text>
             <Text style={[styles.label, { color: C.textSecondary }]}>Pending</Text>
           </View>
+
+          <View style={[styles.statClay, { backgroundColor: C.surfaceAlt }]}>
+            <Text style={[styles.value, { color: C.accent }]}>
+              {weeklyProgress.overdueTasks || 0}
+            </Text>
+            <Text style={[styles.label, { color: C.textSecondary }]}>Overdue</Text>
+          </View>
         </View>
 
         <View style={[styles.progressBackground, { backgroundColor: C.surfaceAlt }]}>
@@ -304,8 +364,12 @@ export default function WeekView({ theme = "dark" }: WeekViewProps) {
         </Text>
       </View>
 
-      {/* ── Best / Worst Day ── */}
-      {!isEmpty && bestDay && worstDay && (
+      {/* ── Best / Worst Day ──
+          Worst Day only renders when there's a day genuinely distinct from
+          the best day. If every day is tied (or there's only one day of
+          data), worstDay is null and nothing is rendered for it — no
+          duplicate card, no arbitrary pick. */}
+      {!isEmpty && bestDay && (
         <View style={styles.insightRow}>
           <View
             style={[
@@ -324,36 +388,38 @@ export default function WeekView({ theme = "dark" }: WeekViewProps) {
               Best Day
             </Text>
             <Text style={[styles.insightValue, { color: C.priorityLow }]}>
-              {formatDate(bestDay.date)}
+              {formatDisplayDate(bestDay.date)}
             </Text>
             <Text style={[styles.insightSub, { color: C.textSecondary }]}>
-              {bestDay.percentage}%
+              {bestDay.percentage}% • {bestDay.completed}/{bestDay.total}
             </Text>
           </View>
 
-          <View
-            style={[
-              styles.insightCard,
-              {
-                backgroundColor: C.surface,
-                borderColor: C.border,
-                shadowColor: C.shadowDark,
-              },
-            ]}
-          >
-            <View style={[styles.insightIconWrap, { backgroundColor: C.surfaceAlt }]}>
-              <Ionicons name="arrow-down-circle" size={18} color={C.priorityHigh} />
+          {worstDay && (
+            <View
+              style={[
+                styles.insightCard,
+                {
+                  backgroundColor: C.surface,
+                  borderColor: C.border,
+                  shadowColor: C.shadowDark,
+                },
+              ]}
+            >
+              <View style={[styles.insightIconWrap, { backgroundColor: C.surfaceAlt }]}>
+                <Ionicons name="arrow-down-circle" size={18} color={C.priorityHigh} />
+              </View>
+              <Text style={[styles.insightTitle, { color: C.textSecondary }]}>
+                Worst Day
+              </Text>
+              <Text style={[styles.insightValue, { color: C.priorityHigh }]}>
+                {formatDisplayDate(worstDay.date)}
+              </Text>
+              <Text style={[styles.insightSub, { color: C.textSecondary }]}>
+                {worstDay.percentage}% • {worstDay.completed}/{worstDay.total}
+              </Text>
             </View>
-            <Text style={[styles.insightTitle, { color: C.textSecondary }]}>
-              Worst Day
-            </Text>
-            <Text style={[styles.insightValue, { color: C.priorityHigh }]}>
-              {formatDate(worstDay.date)}
-            </Text>
-            <Text style={[styles.insightSub, { color: C.textSecondary }]}>
-              {worstDay.percentage}%
-            </Text>
-          </View>
+          )}
         </View>
       )}
 
@@ -391,7 +457,7 @@ export default function WeekView({ theme = "dark" }: WeekViewProps) {
   );
 }
 
-// ─── Styles (unchanged) ──────────────────────────────────────────
+// ─── Styles ──────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
   container: {
     flex: 1,
@@ -526,9 +592,16 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
   },
+  todayBadge: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
   dayStats: {
     marginTop: 2,
     fontSize: 12,
+  },
+  overdueText: {
+    fontWeight: "600",
   },
   percent: {
     fontSize: 15,
