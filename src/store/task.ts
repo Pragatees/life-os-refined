@@ -21,7 +21,7 @@ export type { Task };
 // on every task.
 export type RepeatType = "NEVER" | "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY";
 
-const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
+const API_URL = `${process.env.EXPO_PUBLIC_API_URL}/api`;
 
 // ─── Store Types ──────────────────────────────────────────────────────────────
 

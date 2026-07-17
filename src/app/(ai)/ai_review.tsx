@@ -17,7 +17,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { GoogleGenAI } from "@google/genai";
 
 import { ProgressSummary } from "../../store/progress";
 import { getTodayDateString } from "../../utils/date";
@@ -30,16 +29,76 @@ import WeekReview from "./week_review";
 import MonthReview from "./month_review";
 
 // ─────────────────────────────────────────────────────────────────────────
-// ⚠️ Do not ship a raw API key in client code. Move this call to your
-// backend (life-os-backend) and have the app call your own endpoint with
-// the Bearer token you already use elsewhere. Left here as a placeholder
-// only so the component compiles standalone.
+// Groq API key is never bundled with the client. It's fetched from the
+// backend right before it's needed (i.e. when the user triggers a review
+// generation) and used to make a single call to Groq's chat completions
+// endpoint. Nothing is cached in memory or storage.
 // ─────────────────────────────────────────────────────────────────────────
-const GEMINI_API_KEY = "AQ.Ab8RN6JD1xvSmrVZSrScYqhj17PRzCWTfc195-ZdLO_bbPpwaA";
-export const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+const GROQ_KEY_ENDPOINT = `${process.env.EXPO_PUBLIC_API_URL}/api/gemini/key`;
+const GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions";
+const GROQ_MODEL = "llama-3.3-70b-versatile";
 
 export const getToken = (): Promise<string | null> =>
   AsyncStorage.getItem("token");
+
+/**
+ * Fetches the Groq API key from the backend. Call this only when a review
+ * is actually about to be generated — not on mount, and not stored globally.
+ */
+async function getGroqApiKey(): Promise<string> {
+  const token = await getToken();
+
+  const response = await fetch(GROQ_KEY_ENDPOINT, {
+    method: "GET",
+    headers: {
+      "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to fetch Groq API key (status ${response.status})`);
+  }
+
+  // Same shape as the previous Gemini endpoint — plain text body.
+  const apiKey = (await response.text()).trim();
+
+  if (!apiKey) {
+    throw new Error("Received an empty Groq API key from the backend.");
+  }
+
+  return apiKey;
+}
+
+/**
+ * Fetches a fresh Groq key from the backend and immediately uses it to
+ * generate a chat completion for the given prompt. The key never leaves
+ * this function's scope.
+ */
+export async function generateWithGroq(prompt: string): Promise<string> {
+  const apiKey = await getGroqApiKey();
+
+  const res = await fetch(GROQ_API_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.7,
+    }),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "");
+    throw new Error(`Groq API error (${res.status}): ${errBody || res.statusText}`);
+  }
+
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content ?? "No response received.";
+}
 
 // ── AsyncStorage keys used to persist generated reviews ─────────────────
 export const STORAGE_KEYS = {
@@ -51,6 +110,27 @@ export const STORAGE_KEYS = {
 export interface StoredReview {
   text: string;
   generatedAt: string;
+}
+
+/**
+ * Deletes every persisted AI review (day/week/month) from AsyncStorage.
+ * Call this once from your logout handler (e.g. in Sidebar.tsx or your
+ * auth store) so a previous user's generated reviews never leak into the
+ * next signed-in session on the same device.
+ *
+ *   import { clearAllReviewData } from "./AIReviewScreen"; // or "./ai_review"
+ *
+ *   async function logout() {
+ *     await clearAllReviewData();
+ *     // ... clear token, reset auth state, navigate to login, etc.
+ *   }
+ */
+export async function clearAllReviewData(): Promise<void> {
+  try {
+    await AsyncStorage.multiRemove(Object.values(STORAGE_KEYS));
+  } catch (e) {
+    console.error("[AIReviewScreen] Failed to clear stored reviews on logout:", e);
+  }
 }
 
 // ── Theme tokens (mirrors app/(dashboard)/index.tsx) ───────────────────────
@@ -311,15 +391,15 @@ export default function AIReviewScreen() {
   useEffect(() => {
     if (themeLoaded) {
       Animated.parallel([
-        Animated.timing(headerFade, { 
-          toValue: 1, 
-          duration: 380, 
-          useNativeDriver: true 
+        Animated.timing(headerFade, {
+          toValue: 1,
+          duration: 380,
+          useNativeDriver: true,
         }),
-        Animated.timing(headerSlide, { 
-          toValue: 0, 
-          duration: 380, 
-          useNativeDriver: true 
+        Animated.timing(headerSlide, {
+          toValue: 0,
+          duration: 380,
+          useNativeDriver: true,
         }),
       ]).start();
     }
@@ -390,6 +470,12 @@ export default function AIReviewScreen() {
 
   const displayName = (fullName || username || "").trim();
 
+  // Identity key passed down to the review screens so they can detect a
+  // logout -> different-login transition and reset their in-memory state.
+  // Uses username (falling back to fullName) since that's already loaded
+  // here; swap this for a real user id if your auth system exposes one.
+  const reviewUserId = (username || fullName || "").trim() || null;
+
   if (!themeLoaded) {
     return (
       <View style={[styles.loadingContainer, { backgroundColor: DARK.bg }]}>
@@ -404,9 +490,9 @@ export default function AIReviewScreen() {
     <View
       style={[
         styles.root,
-        { 
-          backgroundColor: C.bg, 
-          paddingTop: Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 0 
+        {
+          backgroundColor: C.bg,
+          paddingTop: Platform.OS === "android" ? StatusBar.currentHeight ?? 0 : 0,
         },
       ]}
     >
@@ -473,10 +559,10 @@ export default function AIReviewScreen() {
       <View
         style={[
           sharedStyles.segment,
-          { 
-            backgroundColor: C.surface, 
-            borderColor: C.border, 
-            shadowColor: C.shadowDark 
+          {
+            backgroundColor: C.surface,
+            borderColor: C.border,
+            shadowColor: C.shadowDark,
           },
         ]}
       >
@@ -512,10 +598,11 @@ export default function AIReviewScreen() {
         })}
       </View>
 
-      {/* ── Active child screen (theme is passed down so it always stays in sync) ── */}
-      {activeTab === "day" && <DayReview theme={theme} />}
-      {activeTab === "week" && <WeekReview theme={theme} />}
-      {activeTab === "month" && <MonthReview theme={theme} />}
+      {/* ── Active child screen (theme + userId passed down so it always
+           stays in sync and resets cleanly across logout/login) ── */}
+      {activeTab === "day" && <DayReview theme={theme} userId={reviewUserId} />}
+      {activeTab === "week" && <WeekReview theme={theme} userId={reviewUserId} />}
+      {activeTab === "month" && <MonthReview theme={theme} userId={reviewUserId} />}
 
       {/* ── Sidebar overlay (mirrors app/(dashboard)/index.tsx) ── */}
       {sidebarMounted && (
@@ -581,7 +668,6 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
 
-  // ── Enhanced Header Card (matches Dashboard) ──────────────────────────
   headerCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -646,9 +732,6 @@ const styles = StyleSheet.create({
 
 // ── Shared Styles (updated for consistency) ──────────────────────────────
 export const sharedStyles = StyleSheet.create({
-  // ... keep existing sharedStyles but remove header-related ones
-  // since they're now in the main styles object
-  
   segment: {
     flexDirection: "row",
     borderRadius: 20,
@@ -661,9 +744,9 @@ export const sharedStyles = StyleSheet.create({
     elevation: 4,
     marginBottom: 14,
   },
-  
+
   segmentItem: { flex: 1 },
-  
+
   segmentActive: {
     flexDirection: "row",
     alignItems: "center",
@@ -672,7 +755,7 @@ export const sharedStyles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 14,
   },
-  
+
   segmentInactive: {
     flexDirection: "row",
     alignItems: "center",
@@ -681,11 +764,10 @@ export const sharedStyles = StyleSheet.create({
     paddingVertical: 10,
     borderRadius: 14,
   },
-  
+
   segmentText: { fontSize: 12, fontWeight: "600" },
   segmentTextActive: { fontSize: 12, fontWeight: "700", color: "#FFFFFF" },
 
-  // ── Sidebar-related styles ──────────────────────────────────────────────
   backdrop: {
     backgroundColor: "rgba(0,0,0,0.55)",
   },
@@ -707,9 +789,8 @@ export const sharedStyles = StyleSheet.create({
     zIndex: 1000,
   },
 
-  // ── Other shared styles ──────────────────────────────────────────────────
   scrollContent: { paddingBottom: 40 },
-  
+
   card: {
     borderRadius: 22,
     borderWidth: 1,
@@ -734,14 +815,14 @@ export const sharedStyles = StyleSheet.create({
     gap: 10,
     marginBottom: 14,
   },
-  
+
   statBox: {
     flexBasis: "47%",
     borderRadius: 14,
     paddingVertical: 12,
     paddingHorizontal: 12,
   },
-  
+
   statValue: { fontSize: 20, fontWeight: "800" },
   statLabel: { fontSize: 11, marginTop: 2 },
 
@@ -750,12 +831,12 @@ export const sharedStyles = StyleSheet.create({
     borderRadius: 6,
     overflow: "hidden",
   },
-  
+
   progressBarFill: {
     height: 8,
     borderRadius: 6,
   },
-  
+
   completionText: {
     fontSize: 12,
     fontWeight: "600",
@@ -771,7 +852,7 @@ export const sharedStyles = StyleSheet.create({
     borderRadius: 14,
     borderWidth: 1,
   },
-  
+
   noteText: { fontSize: 12, flex: 1, lineHeight: 17 },
 
   generateBtnWrap: { marginTop: 16, borderRadius: 18, overflow: "hidden" },

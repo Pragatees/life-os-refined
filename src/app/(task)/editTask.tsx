@@ -114,7 +114,7 @@ const REPEAT_OPTIONS: RepeatType[] = ["NEVER", "DAILY", "WEEKLY", "MONTHLY", "YE
 // TODO: point this at the same host your store/task.ts uses for fetchTasks /
 // markComplete / updateTask, so this component doesn't drift from the rest
 // of the app's API layer.
-const API_BASE_URL = "https://life-os-backend-1ozl.onrender.com/api/tasks";
+const API_BASE_URL = `${process.env.EXPO_PUBLIC_API_URL}/api/tasks`;
 // TODO: match whichever key your auth flow already uses to persist the JWT.
 
 type ApiResult = { ok: boolean; error?: string };

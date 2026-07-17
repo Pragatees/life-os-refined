@@ -1,25 +1,3 @@
-// app/(notes)/ViewandEdit.tsx
-//
-// Self-contained "View & Edit" screen/component:
-//  - Renders a month calendar (like Addandview.tsx's date navigator, but as
-//    a full grid instead of prev/next arrows).
-//  - Tapping any date pops up a modal for that day:
-//      • If a note exists            -> shows it, with an "Edit" button.
-//      • If no note exists yet       -> tells the user, with a text box to
-//                                        add one straight away.
-//  - Saving reuses the exact same storage logic as Addandview.tsx:
-//      • GET  {API_URL}/date?date=YYYY-MM-DD   to load a day's note
-//      • POST {API_URL}                        to create a new note
-//      • PUT  {API_URL}/:id                    to update an existing note
-//  - "Has a note" dots on the calendar now come from the shared Zustand
-//    store (notes.ts) via getAllNoteDates(), instead of being lazily
-//    filled in only for days the user has opened. This means every day
-//    with a saved note is highlighted as soon as the calendar mounts.
-//
-// Drop this in as app/(notes)/ViewandEdit.tsx. It only needs `theme` from
-// the parent screen — it manages its own selected date and modal state.
-//
-// NOTE: adjust the import path below to wherever your notes.ts store lives.
 import { useNotesStore } from "../../store/notes";
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -39,7 +17,7 @@ import axios from "axios";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 
-const API_URL = "https://life-os-backend-1ozl.onrender.com/api/notes";
+const API_URL = `${process.env.EXPO_PUBLIC_API_URL}/api/notes`;
 
 // ─── Theme Tokens (same palette as NotesScreen / Dashboard) ───────────────
 const DARK = {

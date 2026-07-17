@@ -70,7 +70,7 @@ export default function ChangeUsernameModal({ visible, onClose, theme }: { visib
     try {
       setLoading(true);
       const token = await AsyncStorage.getItem("token");
-      const response = await fetch("https://life-os-backend-1ozl.onrender.com/api/users/profile", {
+      const response = await fetch(`${process.env.EXPO_PUBLIC_API_URL}/api/users/profile`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ username, fullName }),

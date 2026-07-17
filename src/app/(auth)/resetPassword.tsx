@@ -10,7 +10,7 @@ import axios from "axios";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
 
-const BASE_URL = "https://life-os-backend-1ozl.onrender.com/api";
+const BASE_URL = `${process.env.EXPO_PUBLIC_API_URL}/api`;
 
 // ─── Theme Tokens (Claymorphism — same language as the rest of the auth flow) ─
 // Near-black background, warm amber/orange accent, soft clay shadows.

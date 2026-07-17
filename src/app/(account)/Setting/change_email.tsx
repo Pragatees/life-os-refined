@@ -40,7 +40,7 @@ const THEMES = {
   },
 };
 
-const BASE_URL = "https://life-os-backend-1ozl.onrender.com/api";
+const BASE_URL = `${process.env.EXPO_PUBLIC_API_URL}/api`;
 
 type Step = "password" | "email" | "otp";
 

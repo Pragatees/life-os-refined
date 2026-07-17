@@ -3,7 +3,21 @@
 // Child screen for the "Day" review tab. Theme is passed down from the
 // parent (AIReviewScreen.tsx) as a prop, so switching theme there is
 // always instantly reflected here — there is no local theme state.
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+//
+// Review results ARE persisted to AsyncStorage (STORAGE_KEYS.day), one
+// per calendar day. Once a review is generated today, the button is
+// disabled and stays disabled until the calendar day rolls over — the
+// stored review is then detected as stale and cleared automatically.
+//
+// On logout, call clearAllReviewData() (see note at the bottom of this
+// file) so no previous user's review persists into the next session.
+//
+// `userId` is optional but recommended: pass the current logged-in
+// user's id (or null/"guest" when signed out) from the parent. Whenever
+// this value changes (logout, or login as a different user), this
+// screen resets its in-memory state so no stale note/result from the
+// previous user can flash on screen before the effects re-run.
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, TouchableOpacity, ActivityIndicator, ScrollView, StyleSheet } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
@@ -11,11 +25,11 @@ import { LinearGradient } from "expo-linear-gradient";
 
 import { useProgressStore } from "../../store/progress";
 import { useNotesStore } from "../../store/notes";
-import { getTodayDateString, formatDate } from "../../utils/date";
+import { getTodayDateString } from "../../utils/date";
 import {
   Theme,
   colorsForTheme,
-  ai,
+  generateWithGroq,
   getToken,
   buildPrompt,
   groupByDate,
@@ -27,9 +41,13 @@ import {
 
 interface DayReviewProps {
   theme: Theme;
+  /** Current user's id. Pass null/"guest" when signed out. Optional. */
+  userId?: string | null;
 }
 
-export default function DayReview({ theme }: DayReviewProps) {
+const NINE_PM = 21 * 60; // 21:00 in minutes
+
+export default function DayReview({ theme, userId = null }: DayReviewProps) {
   const C = colorsForTheme(theme);
 
   const [loading, setLoading] = useState(false);
@@ -40,6 +58,10 @@ export default function DayReview({ theme }: DayReviewProps) {
   const [username, setUsername] = useState("");
   const [isReviewEnabled, setIsReviewEnabled] = useState(false);
   const [hasReviewedToday, setHasReviewedToday] = useState(false);
+
+  // Tracks the previous userId so we can detect a login/logout switch
+  // and wipe in-memory state before it can flash stale content.
+  const previousUserIdRef = useRef<string | null | undefined>(userId);
 
   const {
     dailyTasks,
@@ -56,7 +78,25 @@ export default function DayReview({ theme }: DayReviewProps) {
     initializeProgress();
   }, [initializeProgress]);
 
+  // Reset local state whenever the signed-in user changes.
   useEffect(() => {
+    if (previousUserIdRef.current !== userId) {
+      previousUserIdRef.current = userId;
+      setLoading(false);
+      setError(null);
+      setResult(null);
+      setSavedAt(null);
+      setTodaysNote("");
+      setUsername("");
+      setIsReviewEnabled(false);
+      setHasReviewedToday(false);
+    }
+  }, [userId]);
+
+  // Check time-of-day gate AND whether a review already exists for today.
+  useEffect(() => {
+    let cancelled = false;
+
     const checkReviewStatus = async () => {
       try {
         const now = new Date();
@@ -64,36 +104,30 @@ export default function DayReview({ theme }: DayReviewProps) {
         const currentMinutes = now.getMinutes();
         const currentTimeInMinutes = currentHour * 60 + currentMinutes;
 
-        const NINE_PM = 21 * 60;
-        const ONE_PM = 13 * 60;
-
         const isAfter9PM = currentTimeInMinutes >= NINE_PM;
         const todayStr = getTodayDateString();
 
         const raw = await AsyncStorage.getItem(STORAGE_KEYS.day);
+        if (cancelled) return;
+
         if (raw) {
           const stored: StoredReview = JSON.parse(raw);
-          const storedDate = new Date(stored.generatedAt);
-          const storedDateStr = formatDate(storedDate);
-          const isToday = storedDateStr === todayStr;
-          const isPast1PM = currentTimeInMinutes >= ONE_PM;
+          const storedDateStr = new Date(stored.generatedAt).toISOString().split("T")[0];
 
-          if (isToday) {
+          if (storedDateStr === todayStr) {
+            // Review exists for today — lock the button.
             setHasReviewedToday(true);
             setResult(stored.text);
             setSavedAt(stored.generatedAt);
             setIsReviewEnabled(isAfter9PM);
-          } else if (!isToday && isPast1PM) {
+          } else {
+            // Stale review from a previous day — clear it.
             await AsyncStorage.removeItem(STORAGE_KEYS.day);
+            if (cancelled) return;
             setResult(null);
             setSavedAt(null);
             setHasReviewedToday(false);
             setIsReviewEnabled(isAfter9PM);
-          } else {
-            setResult(stored.text);
-            setSavedAt(stored.generatedAt);
-            setHasReviewedToday(false);
-            setIsReviewEnabled(false);
           }
         } else {
           setHasReviewedToday(false);
@@ -101,37 +135,48 @@ export default function DayReview({ theme }: DayReviewProps) {
         }
       } catch (e) {
         console.error("[DayReview] Failed to check review status:", e);
-        setIsReviewEnabled(false);
+        if (!cancelled) setIsReviewEnabled(false);
       }
     };
 
     checkReviewStatus();
     const interval = setInterval(checkReviewStatus, 60000);
-    return () => clearInterval(interval);
-  }, []);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [userId]);
 
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
       try {
         const name = await AsyncStorage.getItem("fullName");
         const uname = await AsyncStorage.getItem("username");
+        if (cancelled) return;
         setUsername((name || uname || "").trim());
 
         const token = await getToken();
         const today = getTodayDateString();
         const entry = await getNote(today, token);
+        if (cancelled) return;
         setTodaysNote(entry?.content ?? "");
       } catch (e) {
         console.error("[DayReview] Failed to load note/profile:", e);
       }
     })();
-  }, [getNote]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [getNote, userId]);
 
   const dailyByDate = useMemo(() => groupByDate(dailyTasks), [dailyTasks]);
 
   const handleGenerateReview = useCallback(async () => {
     if (!isReviewEnabled || hasReviewedToday) {
-      setError("Review is not available at this time.");
+      setError("Daily review is not available at this time.");
       return;
     }
 
@@ -144,35 +189,34 @@ export default function DayReview({ theme }: DayReviewProps) {
         byDate: dailyByDate,
       });
 
-      const result = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-      });
-
-      const text = result.text ?? "No response received.";
+      // Fetches the Groq API key from the backend and makes the chat
+      // completion call in one step — the key never touches this file
+      // or gets stored anywhere on the client.
+      const text = await generateWithGroq(prompt);
       const generatedAt = new Date().toISOString();
 
       setResult(text);
       setSavedAt(generatedAt);
       setHasReviewedToday(true);
 
+      // Persist so the one-per-day lock survives app restarts.
       const toStore: StoredReview = { text, generatedAt };
       await AsyncStorage.setItem(STORAGE_KEYS.day, JSON.stringify(toStore));
     } catch (e: any) {
-      console.error("[DayReview] Gemini error:", e);
+      console.error("[DayReview] Groq error:", e);
       setError(e?.message || "Something went wrong generating your review.");
     } finally {
       setLoading(false);
     }
   }, [username, dailyProgress, dailyTasks, todaysNote, dailyByDate, isReviewEnabled, hasReviewedToday]);
 
-  const getButtonStatus = () => {
-    const now = new Date();
-    const currentHour = now.getHours();
-
+  const getButtonStatus = useCallback(() => {
     if (hasReviewedToday) {
       return "Review already generated for today";
     }
+
+    const now = new Date();
+    const currentHour = now.getHours();
 
     if (currentHour < 21) {
       const hoursRemaining = 21 - currentHour;
@@ -180,7 +224,7 @@ export default function DayReview({ theme }: DayReviewProps) {
     }
 
     return "Generate Review";
-  };
+  }, [hasReviewedToday]);
 
   if (dailyLoading) {
     return (
@@ -221,9 +265,7 @@ export default function DayReview({ theme }: DayReviewProps) {
           <Text style={[sharedStyles.cardLabel, { color: C.textSecondary }]}>Today</Text>
           <View style={localStyles.errorContainer}>
             <Ionicons name="alert-circle-outline" size={40} color={C.danger} />
-            <Text style={[localStyles.errorText, { color: C.danger }]}>
-              {dailyError}
-            </Text>
+            <Text style={[localStyles.errorText, { color: C.danger }]}>{dailyError}</Text>
             <TouchableOpacity
               style={[localStyles.retryButton, { backgroundColor: C.accent }]}
               onPress={() => fetchDailyProgress(true)}
@@ -322,7 +364,11 @@ export default function DayReview({ theme }: DayReviewProps) {
           style={localStyles.generateBtnWrap}
         >
           <LinearGradient
-            colors={(!isReviewEnabled || hasReviewedToday) ? [C.textSecondary, C.textSecondary] : C.accentGradient}
+            colors={
+              !isReviewEnabled || hasReviewedToday
+                ? [C.textSecondary, C.textSecondary]
+                : C.accentGradient
+            }
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={localStyles.generateBtn}
@@ -336,9 +382,7 @@ export default function DayReview({ theme }: DayReviewProps) {
                   size={16}
                   color="#FFFFFF"
                 />
-                <Text style={localStyles.generateBtnText}>
-                  {getButtonStatus()}
-                </Text>
+                <Text style={localStyles.generateBtnText}>{getButtonStatus()}</Text>
               </>
             )}
           </LinearGradient>
@@ -372,7 +416,7 @@ export default function DayReview({ theme }: DayReviewProps) {
           <ReviewOutput text={result} C={C} />
           {savedAt && (
             <Text style={[localStyles.savedAtText, { color: C.textSecondary }]}>
-              Saved {new Date(savedAt).toLocaleString()}
+              Generated {new Date(savedAt).toLocaleString()}
             </Text>
           )}
         </View>
@@ -529,3 +573,37 @@ const localStyles = StyleSheet.create({
     fontStyle: "italic",
   },
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// LOGOUT CLEANUP (do this once, in your auth/logout logic — not in this file)
+// ─────────────────────────────────────────────────────────────────────────
+// Make sure ai_review.ts exports the day key and a shared clear helper so
+// every review screen (day/week/month) clears together on logout:
+//
+//   export const STORAGE_KEYS = {
+//     day: "ai_review_day",
+//     week: "ai_review_week",
+//     month: "ai_review_month",
+//   };
+//
+//   export async function clearAllReviewData() {
+//     try {
+//       await AsyncStorage.multiRemove(Object.values(STORAGE_KEYS));
+//     } catch (e) {
+//       console.error("[ai_review] Failed to clear stored reviews on logout:", e);
+//     }
+//   }
+//
+// Then in your logout handler:
+//
+//   import { clearAllReviewData } from "./app/(task)/ai_review";
+//
+//   export async function logout() {
+//     await clearAllReviewData();
+//     // ... clear tokens, reset auth store, navigate to login, etc.
+//   }
+//
+// And render this screen with the current user id so it self-resets on
+// user switch even if it stays mounted across the logout transition:
+//
+//   <DayReview theme={theme} userId={currentUser?.id ?? null} />

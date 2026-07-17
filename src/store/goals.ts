@@ -3,7 +3,7 @@ import { persist, createJSONStorage } from "zustand/middleware";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import GoalNotificationService from "../notifications/goal/GoalNotificationService";
 
-const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
+const API_URL = `${process.env.EXPO_PUBLIC_API_URL}/api`;
 
 // ================================
 // Goal Types
@@ -226,6 +226,8 @@ export const useGoalStore = create<GoalState>()(
       fetchGoalsByDate: async (
         date: string
       ): Promise<Goal[]> => {
+        set({ loading: true, error: null });
+
         try {
           const token = await getToken();
 
@@ -247,9 +249,18 @@ export const useGoalStore = create<GoalState>()(
             throw new Error("Failed to fetch goals");
           }
 
-          const goals: Goal[] = await response.json();
+          const data: Goal[] = await response.json();
+          const sorted = sortGoals(data);
 
-          return sortGoals(goals);
+          // Update the store so components reading `goals` see the result
+          set({
+            goals: sorted,
+            loading: false,
+            error: null,
+            lastFetchedAt: Date.now(),
+          });
+
+          return sorted;
         } catch (error) {
           console.error(
             "[GoalStore] Fetch Goals By Date Error:",
@@ -257,6 +268,7 @@ export const useGoalStore = create<GoalState>()(
           );
 
           set({
+            loading: false,
             error: handleApiError(error),
           });
 

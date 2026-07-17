@@ -4,8 +4,22 @@
 // parent (AIReviewScreen.tsx) as a prop, so switching theme there is
 // always instantly reflected here — there is no local theme state.
 //
+// Review results ARE persisted to AsyncStorage (STORAGE_KEYS.month), one
+// per calendar month. Once a review is generated for the current month,
+// the button is disabled and stays disabled until the month rolls over —
+// the stored review is then detected as stale and cleared automatically.
+//
+// On logout, call clearAllReviewData() (see note at the bottom of this
+// file) so no previous user's review persists into the next session.
+//
+// `userId` is optional but recommended: pass the current logged-in
+// user's id (or null/"guest" when signed out) from the parent. Whenever
+// this value changes (logout, or login as a different user), this
+// screen resets its in-memory state so no stale result from the
+// previous user can flash on screen before the effects re-run.
+//
 // Adjust these import paths to match your actual project structure.
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, TouchableOpacity, ActivityIndicator, ScrollView } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
@@ -16,7 +30,7 @@ import { useProgressStore } from "../../store/progress";
 import {
   Theme,
   colorsForTheme,
-  ai,
+  generateWithGroq,
   buildPrompt,
   groupByWeekOfMonth,
   ReviewOutput,
@@ -28,9 +42,19 @@ import {
 
 interface MonthReviewProps {
   theme: Theme;
+  /** Current user's id. Pass null/"guest" when signed out. Optional. */
+  userId?: string | null;
 }
 
-export default function MonthReview({ theme }: MonthReviewProps) {
+const NINE_PM = 21 * 60; // 21:00 in minutes
+
+function getMonthKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = date.getMonth();
+  return `${year}-${String(month + 1).padStart(2, "0")}`;
+}
+
+export default function MonthReview({ theme, userId = null }: MonthReviewProps) {
   const C = colorsForTheme(theme);
 
   const [loading, setLoading] = useState(false);
@@ -41,19 +65,35 @@ export default function MonthReview({ theme }: MonthReviewProps) {
   const [isReviewEnabled, setIsReviewEnabled] = useState(false);
   const [hasReviewedThisMonth, setHasReviewedThisMonth] = useState(false);
 
-  const {
-    monthlyTasks,
-    monthlyProgress,
-    initializeProgress,
-  } = useProgressStore();
+  // Tracks the previous userId so we can detect a login/logout switch
+  // and wipe in-memory state before it can flash stale content.
+  const previousUserIdRef = useRef<string | null | undefined>(userId);
+
+  const { monthlyTasks, monthlyProgress, initializeProgress } = useProgressStore();
 
   // Load progress once (store handles caching internally)
   useEffect(() => {
     initializeProgress();
   }, [initializeProgress]);
 
+  // Reset local state whenever the signed-in user changes.
+  useEffect(() => {
+    if (previousUserIdRef.current !== userId) {
+      previousUserIdRef.current = userId;
+      setLoading(false);
+      setError(null);
+      setResult(null);
+      setSavedAt(null);
+      setUsername("");
+      setIsReviewEnabled(false);
+      setHasReviewedThisMonth(false);
+    }
+  }, [userId]);
+
   // Check time constraints and review status for month
   useEffect(() => {
+    let cancelled = false;
+
     const checkReviewStatus = async () => {
       try {
         const now = new Date();
@@ -61,7 +101,6 @@ export default function MonthReview({ theme }: MonthReviewProps) {
         const currentMinutes = now.getMinutes();
         const currentTimeInMinutes = currentHour * 60 + currentMinutes;
 
-        // Get current date info
         const currentDay = now.getDate();
         const currentMonth = now.getMonth();
         const currentYear = now.getFullYear();
@@ -70,97 +109,83 @@ export default function MonthReview({ theme }: MonthReviewProps) {
         const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0);
         const lastDay = lastDayOfMonth.getDate();
 
-        // Get last day of previous month
-        const lastDayOfPreviousMonth = new Date(currentYear, currentMonth, 0);
-        const lastDayPrevMonth = lastDayOfPreviousMonth.getDate();
-
-        // Month review should be available from 25th 9 PM to last day of month 11:59 PM
-        // and also on 1st to check previous month's review
+        // Month review is available from the 25th at 9 PM through the
+        // end of the month, and also on the 1st (to catch up on the
+        // previous month's review).
         const isLastWeekOfMonth = currentDay >= 25;
         const isLastDayOfMonth = currentDay === lastDay;
         const isFirstDayOfMonth = currentDay === 1;
-        
-        // 9 PM = 21:00 = 1260 minutes
-        // 11:59 PM = 23:59 = 1439 minutes
-        const NINE_PM = 21 * 60; // 1260
 
-        // Check if it's review period
-        const isReviewPeriod = 
-          (isLastWeekOfMonth && currentTimeInMinutes >= NINE_PM) || 
+        const isReviewPeriod =
+          (isLastWeekOfMonth && currentTimeInMinutes >= NINE_PM) ||
           isLastDayOfMonth ||
           isFirstDayOfMonth;
 
-        // Get month-year key for the current month
-        const getMonthKey = (date: Date) => {
-          const year = date.getFullYear();
-          const month = date.getMonth();
-          return `${year}-${String(month + 1).padStart(2, '0')}`;
-        };
-
         const currentMonthKey = getMonthKey(now);
 
-        // Check if there's a stored review
         const raw = await AsyncStorage.getItem(STORAGE_KEYS.month);
+        if (cancelled) return;
+
         if (raw) {
           const stored: StoredReview = JSON.parse(raw);
-          const storedDate = new Date(stored.generatedAt);
-          const storedMonthKey = getMonthKey(storedDate);
+          const storedMonthKey = getMonthKey(new Date(stored.generatedAt));
 
-          // Check if review was generated for this month
           const isThisMonth = storedMonthKey === currentMonthKey;
 
           if (isThisMonth) {
-            // Review exists for this month
             setHasReviewedThisMonth(true);
             setResult(stored.text);
             setSavedAt(stored.generatedAt);
-            
-            // Enable only if during review period
             setIsReviewEnabled(isReviewPeriod);
           } else {
-            // Review is from a previous month, should be deleted
+            // Review is from a previous month — stale, remove it
             await AsyncStorage.removeItem(STORAGE_KEYS.month);
+            if (cancelled) return;
             setResult(null);
             setSavedAt(null);
             setHasReviewedThisMonth(false);
             setIsReviewEnabled(isReviewPeriod);
           }
         } else {
-          // No stored review
           setHasReviewedThisMonth(false);
           setIsReviewEnabled(isReviewPeriod);
         }
       } catch (e) {
         console.error("[MonthReview] Failed to check review status:", e);
-        setIsReviewEnabled(false);
+        if (!cancelled) setIsReviewEnabled(false);
       }
     };
 
     checkReviewStatus();
 
-    // Set up interval to check time every minute
     const interval = setInterval(checkReviewStatus, 60000);
 
-    return () => clearInterval(interval);
-  }, []);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [userId]);
 
   // Load username for the prompt payload
   useEffect(() => {
+    let cancelled = false;
+
     (async () => {
       try {
         const name = await AsyncStorage.getItem("fullName");
         const uname = await AsyncStorage.getItem("username");
-        setUsername((name || uname || "").trim());
+        if (!cancelled) setUsername((name || uname || "").trim());
       } catch (e) {
         console.error("[MonthReview] Failed to load profile:", e);
       }
     })();
-  }, []);
 
-  const monthlyByWeek = useMemo(
-    () => groupByWeekOfMonth(monthlyTasks),
-    [monthlyTasks]
-  );
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  const monthlyByWeek = useMemo(() => groupByWeekOfMonth(monthlyTasks), [monthlyTasks]);
 
   const handleGenerateReview = useCallback(async () => {
     if (!isReviewEnabled || hasReviewedThisMonth) {
@@ -176,12 +201,10 @@ export default function MonthReview({ theme }: MonthReviewProps) {
         byWeek: monthlyByWeek,
       });
 
-      const result = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
-        contents: prompt,
-      });
-
-      const text = result.text ?? "No response received.";
+      // Fetches the Groq API key from the backend and makes the chat
+      // completion call in one step — the key never touches this file
+      // or gets stored anywhere on the client.
+      const text = await generateWithGroq(prompt);
       const generatedAt = new Date().toISOString();
 
       setResult(text);
@@ -192,7 +215,7 @@ export default function MonthReview({ theme }: MonthReviewProps) {
       const toStore: StoredReview = { text, generatedAt };
       await AsyncStorage.setItem(STORAGE_KEYS.month, JSON.stringify(toStore));
     } catch (e: any) {
-      console.error("[MonthReview] Gemini error:", e);
+      console.error("[MonthReview] Groq error:", e);
       setError(e?.message || "Something went wrong generating your review.");
     } finally {
       setLoading(false);
@@ -200,24 +223,19 @@ export default function MonthReview({ theme }: MonthReviewProps) {
   }, [username, monthlyProgress, monthlyTasks, monthlyByWeek, isReviewEnabled, hasReviewedThisMonth]);
 
   // Get button status message
-  const getButtonStatus = () => {
+  const getButtonStatus = useCallback(() => {
     if (hasReviewedThisMonth) {
       return "Review already generated for this month";
     }
-    
+
     const now = new Date();
     const currentDay = now.getDate();
     const currentHour = now.getHours();
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
-    
-    // Get last day of current month
+
     const lastDayOfMonth = new Date(currentYear, currentMonth + 1, 0);
     const lastDay = lastDayOfMonth.getDate();
-
-    // Get first day of next month
-    const firstDayOfNextMonth = new Date(currentYear, currentMonth + 1, 1);
-    const isFirstDayNextMonth = currentDay === 1 && now.getMonth() === firstDayOfNextMonth.getMonth();
 
     if (currentDay >= 25 && currentDay <= lastDay) {
       if (currentHour < 21 && currentDay < lastDay) {
@@ -230,7 +248,7 @@ export default function MonthReview({ theme }: MonthReviewProps) {
       const daysUntil25 = 25 - currentDay;
       return `Available from 25th at 9 PM (${daysUntil25}d remaining)`;
     }
-  };
+  }, [hasReviewedThisMonth]);
 
   return (
     <ScrollView
@@ -277,7 +295,11 @@ export default function MonthReview({ theme }: MonthReviewProps) {
         style={sharedStyles.generateBtnWrap}
       >
         <LinearGradient
-          colors={(!isReviewEnabled || hasReviewedThisMonth) ? [C.textSecondary, C.textSecondary] : C.accentGradient}
+          colors={
+            !isReviewEnabled || hasReviewedThisMonth
+              ? [C.textSecondary, C.textSecondary]
+              : C.accentGradient
+          }
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 1 }}
           style={sharedStyles.generateBtn}
@@ -286,14 +308,12 @@ export default function MonthReview({ theme }: MonthReviewProps) {
             <ActivityIndicator size="small" color="#FFFFFF" />
           ) : (
             <>
-              <Ionicons 
-                name={hasReviewedThisMonth ? "checkmark-circle-outline" : "sparkles-outline"} 
-                size={16} 
-                color="#FFFFFF" 
+              <Ionicons
+                name={hasReviewedThisMonth ? "checkmark-circle-outline" : "sparkles-outline"}
+                size={16}
+                color="#FFFFFF"
               />
-              <Text style={sharedStyles.generateBtnText}>
-                {getButtonStatus()}
-              </Text>
+              <Text style={sharedStyles.generateBtnText}>{getButtonStatus()}</Text>
             </>
           )}
         </LinearGradient>
@@ -326,3 +346,37 @@ export default function MonthReview({ theme }: MonthReviewProps) {
     </ScrollView>
   );
 }
+
+// ─────────────────────────────────────────────────────────────────────────
+// LOGOUT CLEANUP (do this once, in your auth/logout logic — not in this file)
+// ─────────────────────────────────────────────────────────────────────────
+// Make sure ai_review.ts exports all three keys plus a shared clear helper
+// so day/week/month reviews all clear together on logout:
+//
+//   export const STORAGE_KEYS = {
+//     day: "ai_review_day",
+//     week: "ai_review_week",
+//     month: "ai_review_month",
+//   };
+//
+//   export async function clearAllReviewData() {
+//     try {
+//       await AsyncStorage.multiRemove(Object.values(STORAGE_KEYS));
+//     } catch (e) {
+//       console.error("[ai_review] Failed to clear stored reviews on logout:", e);
+//     }
+//   }
+//
+// Then in your logout handler:
+//
+//   import { clearAllReviewData } from "./app/(task)/ai_review";
+//
+//   export async function logout() {
+//     await clearAllReviewData();
+//     // ... clear tokens, reset auth store, navigate to login, etc.
+//   }
+//
+// And render this screen with the current user id so it self-resets on
+// user switch even if it stays mounted across the logout transition:
+//
+//   <MonthReview theme={theme} userId={currentUser?.id ?? null} />

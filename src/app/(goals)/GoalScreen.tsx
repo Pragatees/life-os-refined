@@ -276,6 +276,7 @@ export default function GoalScreen() {
             selectedDate={selectedDate}
             refreshKey={refreshKey}
             onRefresh={refreshGoals}
+            theme={theme}
           />
         )}
       </View>

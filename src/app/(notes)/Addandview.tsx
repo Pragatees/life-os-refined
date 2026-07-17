@@ -50,7 +50,7 @@ interface Props {
   theme: Theme;
   selectedDate: string;
   onDateChange: (date: string) => void;
-  onRefresh: () => void;
+  onRefresh?: () => void; // now optional & guarded before calling — see saveNote()
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -112,7 +112,7 @@ export default function AddAndView({
       setNoteId(entry.id);
       setContent(entry.content);
     } catch (error: any) {
-      console.log(error);
+      console.log("[AddAndView] loadNote failed:", error?.message ?? error);
     } finally {
       setLoading(false);
     }
@@ -126,6 +126,27 @@ export default function AddAndView({
     setLocalContent(selectedDate, text);
   };
 
+  // ── Save / Update ──────────────────────────────────────────────────────
+  // Root cause of "note saves fine in the DB but an error alert still
+  // shows" symptoms (two separate versions of this bug so far):
+  //
+  //   1) store/notes.ts's saveNote() used to let a notification-scheduling
+  //      error propagate out AFTER the axios call had already succeeded.
+  //      Fixed by wrapping that notification call in its own try/catch
+  //      inside the store.
+  //
+  //   2) onRefresh() was being called unconditionally after a successful
+  //      save. If the parent screen ever renders this component without
+  //      passing a real onRefresh function, calling it throws
+  //      "TypeError: undefined is not a function" — AFTER the save/DB
+  //      write already succeeded — and that throw was caught by this
+  //      function's catch block, which (wrongly, in this case) shows
+  //      "Something went wrong."
+  //
+  // Fix: the save + local state update + success alert now happen and
+  // complete FIRST. onRefresh() is called afterward, guarded with a
+  // typeof check, and wrapped in its own try/catch — so a broken/missing
+  // onRefresh can never turn a successful save into an error alert.
   const saveNote = async () => {
     if (!content.trim()) {
       Alert.alert("Validation", "Please enter a note.");
@@ -133,6 +154,8 @@ export default function AddAndView({
     }
 
     setSaving(true);
+
+    let entry;
 
     try {
       const token = await AsyncStorage.getItem("token");
@@ -142,28 +165,45 @@ export default function AddAndView({
         return;
       }
 
-      const entry = await saveNoteToStore(selectedDate, content.trim(), token);
+      entry = await saveNoteToStore(selectedDate, content.trim(), token);
 
-      setNoteId(entry.id);
-      setContent(entry.content);
-
-      Alert.alert("Success", "Note saved successfully.");
-
-      onRefresh();
+      // Log what the backend returned after the save/update.
+      console.log("[AddAndView] Save note - backend response (entry):", entry);
     } catch (error: any) {
       if (axios.isAxiosError(error)) {
-        console.log("Status:", error.response?.status);
-        console.log("Response:", error.response?.data);
+        console.log("[AddAndView] Save failed - Status:", error.response?.status);
+        console.log("[AddAndView] Save failed - Response:", error.response?.data);
 
         Alert.alert("Error", error.response?.data?.message ?? "Unable to save note.");
       } else {
-        console.log(error);
+        console.log("[AddAndView] Save failed:", error?.message ?? error);
+        console.log(error?.stack);
 
         Alert.alert("Error", "Something went wrong.");
       }
-    } finally {
+
       setSaving(false);
+      return; // save genuinely failed — stop here
     }
+
+    // ── At this point the save has genuinely succeeded. Everything below
+    // is best-effort UI/refresh work and must never surface as a save
+    // error, no matter what happens. ──
+    setNoteId(entry.id);
+    setContent(entry.content);
+    Alert.alert("Success", "Note saved successfully.");
+
+    try {
+      if (typeof onRefresh === "function") {
+        onRefresh();
+      } else {
+        console.log("[AddAndView] onRefresh was not passed as a function, skipping.");
+      }
+    } catch (refreshError: any) {
+      console.log("[AddAndView] onRefresh threw after successful save:", refreshError?.message ?? refreshError);
+    }
+
+    setSaving(false);
   };
 
   return (

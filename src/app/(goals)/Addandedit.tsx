@@ -19,7 +19,7 @@ import DateTimePicker, {
   DateTimePickerEvent,
 } from "@react-native-community/datetimepicker";
 
-const API_URL = "https://life-os-backend-1ozl.onrender.com/api/goals";
+const API_URL = `${process.env.EXPO_PUBLIC_API_URL}/api/goals`;
 
 // ─── Theme Tokens (same palette as Dashboard — keep in sync) ──────────────
 // NOTE: ideally these live in one shared file imported everywhere.

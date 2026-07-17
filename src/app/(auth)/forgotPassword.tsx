@@ -10,7 +10,7 @@ import axios from "axios";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
 
-const BASE_URL = "https://life-os-backend-1ozl.onrender.com/api";
+const BASE_URL = `${process.env.EXPO_PUBLIC_API_URL}/api`;
 const MAX_REQUESTS_PER_DAY = 3;
 const COOLDOWN_SECONDS = 15 * 60; // 15 minutes
 

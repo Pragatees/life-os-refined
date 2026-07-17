@@ -122,7 +122,7 @@ export default function ChangePasswordModal({ visible, onClose, theme }: { visib
     try {
       setLoading(true);
       const token = await AsyncStorage.getItem("token");
-      const response = await fetch("https://life-os-backend-1ozl.onrender.com/api/users/password", {
+      const response = await fetch(`${process.env.EXPO_PUBLIC_API_URL}/api/users/password`,  {
         method: "PATCH",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
         body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),

@@ -14,7 +14,7 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
 import {
@@ -24,7 +24,25 @@ import {
   isSuccessResponse,
 } from "@react-native-google-signin/google-signin";
 
-const BASE_URL = "https://life-os-backend-1ozl.onrender.com/api";
+// ─── Environment validation ─────────────────────────────────────────────────
+// Environment variables are read once at module load and validated before
+// use. If either is missing, the corresponding auth flow fails safely with a
+// user-facing message instead of throwing at request time.
+const RAW_API_URL = process.env.EXPO_PUBLIC_API_URL;
+const RAW_GOOGLE_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID;
+
+if (!RAW_API_URL) {
+  console.error("[Login] Missing required environment variable: EXPO_PUBLIC_API_URL");
+}
+if (!RAW_GOOGLE_CLIENT_ID) {
+  console.error("[Login] Missing required environment variable: EXPO_PUBLIC_GOOGLE_CLIENT_ID");
+}
+
+const ENV_READY = Boolean(RAW_API_URL);
+const GOOGLE_ENV_READY = Boolean(RAW_GOOGLE_CLIENT_ID);
+
+const BASE_URL = ENV_READY ? `${RAW_API_URL}/api` : "";
+const GOOGLE_CLIENT_ID = RAW_GOOGLE_CLIENT_ID ?? "";
 
 // ─── Theme Tokens (Claymorphism — same language as the rest of the app) ────
 // Near-black background, warm amber/orange accent, soft clay shadows.
@@ -47,19 +65,92 @@ const T = {
 };
 
 // ─── Google Sign-In Configuration ───────────────────────────────────────────
-GoogleSignin.configure({
-  webClientId:
-    "260015412456-k4nkvjb1hd0mabk5g362otqg3818l6nt.apps.googleusercontent.com",
-  offlineAccess: true,
-});
+// Configured lazily (once, and only if a client ID is present) rather than
+// as a module-level side effect, so a missing env var never crashes import.
+let googleSignInConfigured = false;
 
-// Helper: pull a profile picture URL out of a backend response
-const extractProfilePicture = (data: any): string => {
-  return data?.profilePicture ?? data?.profile_picture ?? "";
+const configureGoogleSignInOnce = (): void => {
+  if (googleSignInConfigured || !GOOGLE_ENV_READY) {
+    return;
+  }
+  GoogleSignin.configure({
+    webClientId: GOOGLE_CLIENT_ID,
+    offlineAccess: true,
+  });
+  googleSignInConfigured = true;
 };
 
-// ─── /auth/me fetch + storage ───────────────────────────────────────────────
-type MeResponse = {
+// ─── Storage keys (centralized) ─────────────────────────────────────────────
+const StorageKeys = {
+  TOKEN: "token",
+  USERNAME: "username",
+  FULL_NAME: "fullName",
+  EMAIL: "email",
+  PROFILE_PICTURE: "profilePicture",
+  PROVIDER: "provider",
+  THEME: "theme",
+  LOGIN_ATTEMPTS: "loginAttemptCount",
+  LOGIN_LOCKOUT_UNTIL: "loginLockoutUntil",
+} as const;
+
+const SESSION_STORAGE_KEYS: string[] = [
+  StorageKeys.TOKEN,
+  StorageKeys.USERNAME,
+  StorageKeys.FULL_NAME,
+  StorageKeys.EMAIL,
+  StorageKeys.PROFILE_PICTURE,
+  StorageKeys.PROVIDER,
+  StorageKeys.THEME,
+];
+
+// ─── Safe AsyncStorage helpers (every call wrapped in try/catch) ───────────
+const safeGetItem = async (key: string): Promise<string | null> => {
+  try {
+    return await AsyncStorage.getItem(key);
+  } catch (err) {
+    console.error(`[Login] Failed to read "${key}" from AsyncStorage`, err);
+    return null;
+  }
+};
+
+const safeSetItem = async (key: string, value: string): Promise<boolean> => {
+  try {
+    await AsyncStorage.setItem(key, value);
+    return true;
+  } catch (err) {
+    console.error(`[Login] Failed to write "${key}" to AsyncStorage`, err);
+    return false;
+  }
+};
+
+const safeMultiSet = async (pairs: [string, string][]): Promise<boolean> => {
+  try {
+    await AsyncStorage.multiSet(pairs);
+    return true;
+  } catch (err) {
+    console.error("[Login] Failed to write session data to AsyncStorage", err);
+    return false;
+  }
+};
+
+const safeMultiRemove = async (keys: string[]): Promise<void> => {
+  try {
+    await AsyncStorage.multiRemove(keys);
+  } catch (err) {
+    console.error("[Login] Failed to clear AsyncStorage keys", err);
+  }
+};
+
+// Thrown internally when a successful auth response can't be persisted.
+class SessionStorageError extends Error {
+  constructor() {
+    super("SESSION_STORAGE_FAILED");
+    this.name = "SessionStorageError";
+  }
+}
+
+// ─── Types ───────────────────────────────────────────────────────────────
+interface MeResponse {
   id?: number | string;
   username?: string;
   fullName?: string;
@@ -68,33 +159,65 @@ type MeResponse = {
   profilePicture?: string;
   profile_picture?: string;
   provider?: string;
+}
+
+interface LoginApiResponse {
+  accessToken?: string;
+}
+
+interface GoogleLoginApiResponse {
+  accessToken?: string;
+}
+
+interface ApiErrorPayload {
+  message?: string;
+}
+
+interface FailedAttemptOutcome {
+  status: string;
+  lockoutUntil: number;
+}
+
+// Helper: pull a profile picture URL out of a backend response
+const extractProfilePicture = (data: MeResponse | undefined): string => {
+  return data?.profilePicture ?? data?.profile_picture ?? "";
 };
 
-const fetchMeAndStore = async (accessToken: string): Promise<MeResponse> => {
-  const meResponse = await axios.get(`${BASE_URL}/users/me`, {
+// ─── /auth/me fetch + storage ───────────────────────────────────────────────
+const fetchMeAndStore = async (
+  accessToken: string,
+  signal?: AbortSignal
+): Promise<MeResponse> => {
+  const meResponse = await axios.get<MeResponse>(`${BASE_URL}/users/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
     timeout: 15000,
+    signal,
   });
 
   const me: MeResponse = meResponse.data ?? {};
 
-  await AsyncStorage.multiSet([
-    ["token", accessToken],
-    ["username", me.username ?? ""],
-    ["fullName", me.fullName ?? me.full_name ?? ""],
-    ["email", me.email ?? ""],
-    ["profilePicture", me.profilePicture ?? me.profile_picture ?? ""],
-    ["provider", me.provider ?? ""],
-    ["theme", "dark"],
+  const stored = await safeMultiSet([
+    [StorageKeys.TOKEN, accessToken],
+    [StorageKeys.USERNAME, me.username ?? ""],
+    [StorageKeys.FULL_NAME, me.fullName ?? me.full_name ?? ""],
+    [StorageKeys.EMAIL, me.email ?? ""],
+    [StorageKeys.PROFILE_PICTURE, extractProfilePicture(me)],
+    [StorageKeys.PROVIDER, me.provider ?? ""],
+    [StorageKeys.THEME, "dark"],
   ]);
+
+  if (!stored) {
+    // Don't leave a half-written session behind.
+    await safeMultiRemove(SESSION_STORAGE_KEYS);
+    throw new SessionStorageError();
+  }
+
   return me;
 };
 
 // ─── Retry / lockout tracking ────────────────────────────────────────────────
 const MAX_ATTEMPTS = 3;
 const LOCKOUT_DURATION_MS = 60 * 1000; // 1 minute
-const KEY_LOGIN_ATTEMPTS = "loginAttemptCount";
-const KEY_LOGIN_LOCKOUT_UNTIL = "loginLockoutUntil";
 
 const formatCountdown = (ms: number): string => {
   const totalSeconds = Math.max(0, Math.ceil(ms / 1000));
@@ -103,16 +226,17 @@ const formatCountdown = (ms: number): string => {
   return `${m}:${s.toString().padStart(2, "0")}`;
 };
 
-const recordFailedLoginAttempt = async (reason: string): Promise<{ status: string; lockoutUntil: number }> => {
-  const raw = await AsyncStorage.getItem(KEY_LOGIN_ATTEMPTS);
-  const currentCount = raw ? parseInt(raw, 10) : 0;
+const recordFailedLoginAttempt = async (reason: string): Promise<FailedAttemptOutcome> => {
+  const raw = await safeGetItem(StorageKeys.LOGIN_ATTEMPTS);
+  const parsed = raw ? parseInt(raw, 10) : 0;
+  const currentCount = Number.isNaN(parsed) ? 0 : parsed;
   const nextCount = currentCount + 1;
 
   if (nextCount >= MAX_ATTEMPTS) {
     const until = Date.now() + LOCKOUT_DURATION_MS;
-    await AsyncStorage.multiSet([
-      [KEY_LOGIN_ATTEMPTS, "0"],
-      [KEY_LOGIN_LOCKOUT_UNTIL, String(until)],
+    await safeMultiSet([
+      [StorageKeys.LOGIN_ATTEMPTS, "0"],
+      [StorageKeys.LOGIN_LOCKOUT_UNTIL, String(until)],
     ]);
     return {
       status: `Too many failed attempts. Please wait 1 minute before trying again.`,
@@ -120,7 +244,7 @@ const recordFailedLoginAttempt = async (reason: string): Promise<{ status: strin
     };
   }
 
-  await AsyncStorage.setItem(KEY_LOGIN_ATTEMPTS, String(nextCount));
+  await safeSetItem(StorageKeys.LOGIN_ATTEMPTS, String(nextCount));
   return {
     status: `${reason} (Attempt ${nextCount} of ${MAX_ATTEMPTS})`,
     lockoutUntil: 0,
@@ -128,44 +252,66 @@ const recordFailedLoginAttempt = async (reason: string): Promise<{ status: strin
 };
 
 const clearLoginAttempts = async (): Promise<void> => {
-  await AsyncStorage.multiRemove([KEY_LOGIN_ATTEMPTS, KEY_LOGIN_LOCKOUT_UNTIL]);
+  await safeMultiRemove([StorageKeys.LOGIN_ATTEMPTS, StorageKeys.LOGIN_LOCKOUT_UNTIL]);
 };
 
 /** Determines if an error is due to invalid credentials (username/password/email) */
-const isInvalidCredentialsError = (error: any): boolean => {
-  if (!error?.response) return false;
-  const status = error.response.status;
-  const message = error.response.data?.message || 
-                  (typeof error.response.data === "string" ? error.response.data : "");
-  // 401 Unauthorized or 400 Bad Request with invalid credentials message
+const isInvalidCredentialsError = (error: unknown): boolean => {
+  if (!axios.isAxiosError(error)) return false;
+  const axiosError = error as AxiosError<ApiErrorPayload | string>;
+  const status = axiosError.response?.status;
+  if (status === undefined) return false;
+
+  // 401 Unauthorized or 400 Bad Request with an invalid-credentials message
   if (status === 401) return true;
   if (status === 400) {
+    const data = axiosError.response?.data;
+    const message = typeof data === "string" ? data : data?.message ?? "";
     const lowerMsg = message.toLowerCase();
-    return lowerMsg.includes("invalid") || 
-           lowerMsg.includes("incorrect") || 
-           lowerMsg.includes("not found") ||
-           lowerMsg.includes("does not exist");
+    return (
+      lowerMsg.includes("invalid") ||
+      lowerMsg.includes("incorrect") ||
+      lowerMsg.includes("not found") ||
+      lowerMsg.includes("does not exist")
+    );
   }
   return false;
 };
 
 /** Turns a caught axios/native error into a user-safe status line */
-const describeLoginError = (error: any): string => {
+const describeLoginError = (error: unknown): string => {
   if (!error) {
     return "An unknown error occurred. Please wait 1 minute and try again.";
   }
-  
+
   // Check if it's an invalid credentials error first
   if (isInvalidCredentialsError(error)) {
-    const status = error.response.status;
-    const serverMsg = error.response.data?.message ||
-                      (typeof error.response.data === "string" ? error.response.data : "");
+    const axiosError = error as AxiosError<ApiErrorPayload | string>;
+    const data = axiosError.response?.data;
+    const serverMsg = typeof data === "string" ? data : data?.message;
     return serverMsg || "Invalid username/email or password.";
   }
-  
+
   // For any other error (network, server down, DB issues, etc.) - generic message
   return "Please wait 1 minute before trying again.";
 };
+
+/** Was this error a request abort (e.g. component unmounted mid-request)? */
+const isAbortError = (error: unknown): boolean => {
+  if (axios.isCancel(error)) return true;
+  if (axios.isAxiosError(error) && error.code === "ERR_CANCELED") return true;
+  return false;
+};
+
+/** Trims and lightly normalizes a username/email input without altering intent. */
+const normalizeUsernameOrEmail = (input: string): string => {
+  const trimmed = input.trim();
+  // Emails are case-insensitive; usernames are left as typed.
+  return trimmed.includes("@") ? trimmed.toLowerCase() : trimmed;
+};
+
+/** Applies the result of a failed-attempt lookup to component state. */
+type ApplyFailedAttempt = (outcome: FailedAttemptOutcome) => void;
 
 export default function Login() {
   const [usernameOrEmail, setUsernameOrEmail] = useState("");
@@ -184,6 +330,13 @@ export default function Login() {
   const logoScale = useRef(new Animated.Value(0.85)).current;
   const googleButtonScale = useRef(new Animated.Value(1)).current;
 
+  // Guards against duplicate submissions (covers programmatic/rapid triggers
+  // that could race ahead of the `loading` state update).
+  const isSubmittingRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const loginAbortControllerRef = useRef<AbortController | null>(null);
+  const googleAbortControllerRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     Animated.parallel([
       Animated.timing(fadeAnim, { toValue: 1, duration: 420, useNativeDriver: true }),
@@ -192,11 +345,16 @@ export default function Login() {
     ]).start();
   }, [fadeAnim, slideAnim, logoScale]);
 
+  // Configure Google Sign-In exactly once, only if the client ID is valid.
+  useEffect(() => {
+    configureGoogleSignInOnce();
+  }, []);
+
   useEffect(() => {
     (async () => {
-      const raw = await AsyncStorage.getItem(KEY_LOGIN_LOCKOUT_UNTIL);
+      const raw = await safeGetItem(StorageKeys.LOGIN_LOCKOUT_UNTIL);
       const until = raw ? parseInt(raw, 10) : 0;
-      if (until > Date.now()) {
+      if (!Number.isNaN(until) && until > Date.now() && isMountedRef.current) {
         setLockoutUntil(until);
       }
     })();
@@ -219,6 +377,16 @@ export default function Login() {
     }
   }, [lockoutRemainingMs, lockoutUntil]);
 
+  // Abort any in-flight requests and mark unmounted on teardown.
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      loginAbortControllerRef.current?.abort();
+      googleAbortControllerRef.current?.abort();
+    };
+  }, []);
+
   const animateGooglePressIn = () => {
     Animated.spring(googleButtonScale, {
       toValue: 0.97,
@@ -237,92 +405,149 @@ export default function Login() {
     }).start();
   };
 
+  /** Shared post-authentication step: persist session, clear sensitive
+   *  state, and navigate. Used by both the email and Google login flows. */
+  const completeSuccessfulLogin = async (
+    accessToken: string,
+    signal: AbortSignal
+  ): Promise<{ ok: true } | { ok: false }> => {
+    let me: MeResponse = {};
+    try {
+      me = await fetchMeAndStore(accessToken, signal);
+    } catch (meError: unknown) {
+      if (!isMountedRef.current) return { ok: false };
+      if (meError instanceof SessionStorageError) {
+        setStatusMessage("Signed in, but we couldn't save your session. Please try again.");
+      } else {
+        const outcome = await recordFailedLoginAttempt(
+          "Signed in, but couldn't load your profile."
+        );
+        setStatusMessage(outcome.status);
+        if (outcome.lockoutUntil) setLockoutUntil(outcome.lockoutUntil);
+      }
+      return { ok: false };
+    }
+
+    await clearLoginAttempts();
+    if (!isMountedRef.current) return { ok: false };
+
+    setStatusMessage(null);
+    // Clear the password from memory immediately after a successful login.
+    setPassword("");
+
+    const welcomeName = me.fullName ?? me.full_name ?? "";
+    Alert.alert("Login Successful", `Welcome ${welcomeName}`, [
+      {
+        text: "OK",
+        onPress: () => router.replace("/(tabs)/dashboard"),
+      },
+    ]);
+
+    return { ok: true };
+  };
+
+  const applyFailedAttempt: ApplyFailedAttempt = (outcome) => {
+    setStatusMessage(outcome.status);
+    if (outcome.lockoutUntil) setLockoutUntil(outcome.lockoutUntil);
+  };
+
   // ─── Email / Password Login ─────────────────────────────────────────────
   const login = async () => {
+    if (isSubmittingRef.current || loading) {
+      return;
+    }
+
     if (isLockedOut) {
       setStatusMessage(`Too many failed attempts. Try again in ${formatCountdown(lockoutRemainingMs)}.`);
       return;
     }
 
-    if (!usernameOrEmail.trim() || !password.trim()) {
+    if (!ENV_READY) {
+      setStatusMessage("App is not configured correctly. Please contact support.");
+      return;
+    }
+
+    const normalizedUsernameOrEmail = normalizeUsernameOrEmail(usernameOrEmail);
+
+    // Passwords are never trimmed — only checked for presence — so the
+    // exact characters the user typed are what gets sent to the backend.
+    if (!normalizedUsernameOrEmail || password.length === 0) {
       setStatusMessage("Please enter username/email and password.");
       return;
     }
 
     setStatusMessage(null);
+    isSubmittingRef.current = true;
+    setLoading(true);
+
+    const controller = new AbortController();
+    loginAbortControllerRef.current = controller;
 
     try {
-      setLoading(true);
-      const response = await axios.post(
+      const response = await axios.post<LoginApiResponse>(
         `${BASE_URL}/auth/login`,
-        { usernameOrEmail, password },
-        { timeout: 15000 }
+        { usernameOrEmail: normalizedUsernameOrEmail, password },
+        { timeout: 15000, signal: controller.signal }
       );
 
       const data = response.data;
 
       if (!data?.accessToken) {
-        const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(
-          "Server did not return an access token."
-        );
-        setStatusMessage(status);
-        if (newLockout) setLockoutUntil(newLockout);
+        const outcome = await recordFailedLoginAttempt("Server did not return an access token.");
+        if (!isMountedRef.current) return;
+        applyFailedAttempt(outcome);
         return;
       }
 
-      let me: MeResponse = {};
-      try {
-        me = await fetchMeAndStore(data.accessToken);
-      } catch (meError: any) {
-        const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(
-          "Signed in, but couldn't load your profile."
-        );
-        setStatusMessage(status);
-        if (newLockout) setLockoutUntil(newLockout);
-        return;
-      }
+      await completeSuccessfulLogin(data.accessToken, controller.signal);
+    } catch (error: unknown) {
+      if (isAbortError(error)) return;
+      if (!isMountedRef.current) return;
 
-      await clearLoginAttempts();
-      setStatusMessage(null);
-
-      Alert.alert("Login Successful", `Welcome ${me.fullName ?? me.full_name ?? ""}`, [
-        {
-          text: "OK",
-          onPress: () => router.replace("/(tabs)/dashboard"),
-        },
-      ]);
-    } catch (error: any) {
       const reason = describeLoginError(error);
-      
+
       // Only count invalid credentials as attempts
       if (isInvalidCredentialsError(error)) {
-        const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(reason);
-        setStatusMessage(status);
-        if (newLockout) setLockoutUntil(newLockout);
+        const outcome = await recordFailedLoginAttempt(reason);
+        applyFailedAttempt(outcome);
       } else {
-        // For any other error (network, server issues), show the generic message
+        // For any other error (network, server issues), show the generic
+        // message. Don't count these toward lockout attempts.
         setStatusMessage(reason);
-        // Don't count these toward lockout attempts
       }
     } finally {
-      setLoading(false);
+      isSubmittingRef.current = false;
+      loginAbortControllerRef.current = null;
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
   // ─── Google Sign-In Handler ────────────────────────────────────────────
   const handleGoogleLogin = async () => {
-    if (googleLoading || loading) return;
+    if (isSubmittingRef.current || googleLoading || loading) return;
 
     if (isLockedOut) {
       setStatusMessage(`Too many failed attempts. Try again in ${formatCountdown(lockoutRemainingMs)}.`);
       return;
     }
 
+    if (!GOOGLE_ENV_READY) {
+      setStatusMessage("Google sign-in is not configured correctly. Please contact support.");
+      return;
+    }
+
+    configureGoogleSignInOnce();
+
     setStatusMessage(null);
+    isSubmittingRef.current = true;
+    setGoogleLoading(true);
+
+    const controller = new AbortController();
+    googleAbortControllerRef.current = controller;
 
     try {
-      setGoogleLoading(true);
-
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
 
       try {
@@ -334,91 +559,61 @@ export default function Login() {
       const response = await GoogleSignin.signIn();
 
       if (!isSuccessResponse(response)) {
-        setGoogleLoading(false);
         return;
       }
 
       const idToken = response.data?.idToken;
 
       if (!idToken) {
-        const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(
-          "Google didn't return an ID token."
-        );
-        setStatusMessage(status);
-        if (newLockout) setLockoutUntil(newLockout);
-        setGoogleLoading(false);
+        const outcome = await recordFailedLoginAttempt("Google didn't return an ID token.");
+        if (!isMountedRef.current) return;
+        applyFailedAttempt(outcome);
         return;
       }
 
-      let backendResponse;
-      try {
-        backendResponse = await axios.post(
-          `${BASE_URL}/auth/google/login`,
-          { idToken },
-          { timeout: 15000 }
-        );
-      } catch (backendErr: any) {
-        throw backendErr;
-      }
+      const backendResponse = await axios.post<GoogleLoginApiResponse>(
+        `${BASE_URL}/auth/google/login`,
+        { idToken },
+        { timeout: 15000, signal: controller.signal }
+      );
 
       const data = backendResponse.data;
 
       if (!data?.accessToken) {
-        const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(
-          "Server did not return an access token."
-        );
-        setStatusMessage(status);
-        if (newLockout) setLockoutUntil(newLockout);
+        const outcome = await recordFailedLoginAttempt("Server did not return an access token.");
+        if (!isMountedRef.current) return;
+        applyFailedAttempt(outcome);
         return;
       }
 
-      let me: MeResponse = {};
-      try {
-        me = await fetchMeAndStore(data.accessToken);
-      } catch (meError: any) {
-        const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(
-          "Signed in, but couldn't load your profile."
-        );
-        setStatusMessage(status);
-        if (newLockout) setLockoutUntil(newLockout);
-        return;
-      }
+      await completeSuccessfulLogin(data.accessToken, controller.signal);
+    } catch (error: unknown) {
+      if (isAbortError(error)) return;
+      if (!isMountedRef.current) return;
 
-      await clearLoginAttempts();
-      setStatusMessage(null);
-
-      Alert.alert("Login Successful", `Welcome ${me.fullName ?? me.full_name ?? ""}`, [
-        {
-          text: "OK",
-          onPress: () => router.replace("/(tabs)/dashboard"),
-        },
-      ]);
-    } catch (error: any) {
       if (isErrorWithCode(error) && error.code === statusCodes.SIGN_IN_CANCELLED) {
         // User cancelled - do nothing
       } else if (isErrorWithCode(error) && error.code === statusCodes.IN_PROGRESS) {
         setStatusMessage("A sign-in attempt is already in progress.");
       } else {
-        let reason: string;
-        if (isErrorWithCode(error)) {
-          reason = error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE
-            ? "Please wait 1 minute before trying again."
-            : "Please wait 1 minute before trying again.";
-        } else {
-          reason = describeLoginError(error);
-        }
-        
+        const reason = isErrorWithCode(error)
+          ? "Please wait 1 minute before trying again."
+          : describeLoginError(error);
+
         // For Google sign-in, check if it's an auth error from the backend
-        if (error?.response && isInvalidCredentialsError(error)) {
-          const { status, lockoutUntil: newLockout } = await recordFailedLoginAttempt(reason);
-          setStatusMessage(status);
-          if (newLockout) setLockoutUntil(newLockout);
+        if (axios.isAxiosError(error) && isInvalidCredentialsError(error)) {
+          const outcome = await recordFailedLoginAttempt(reason);
+          applyFailedAttempt(outcome);
         } else {
           setStatusMessage(reason);
         }
       }
     } finally {
-      setGoogleLoading(false);
+      isSubmittingRef.current = false;
+      googleAbortControllerRef.current = null;
+      if (isMountedRef.current) {
+        setGoogleLoading(false);
+      }
     }
   };
 

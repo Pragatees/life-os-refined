@@ -24,7 +24,7 @@ import {
   isSuccessResponse,
 } from "@react-native-google-signin/google-signin";
 
-const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
+const API_URL = process.env.EXPO_PUBLIC_API_URL;
 
 // ─── Theme Tokens ───────────────────────────────────────────────────────────
 const T = {
@@ -45,8 +45,7 @@ const T = {
 
 // ─── Google Sign-In Configuration ───────────────────────────────────────────
 GoogleSignin.configure({
-  webClientId:
-    "260015412456-k4nkvjb1hd0mabk5g362otqg3818l6nt.apps.googleusercontent.com",
+  webClientId: process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID,
   offlineAccess: true,
 });
 
@@ -91,12 +90,10 @@ const fetchMeAndStore = async (accessToken) => {
 const isInvalidCredentialsError = (error) => {
   if (!error) return false;
   
-  // Check for 400, 401, 409 status (conflict, invalid, etc.)
   if (error?.response?.status === 400 || 
       error?.response?.status === 401 || 
       error?.response?.status === 409) return true;
   
-  // Check for specific message indicators
   const message = error?.response?.data?.message || 
                   (typeof error?.response?.data === "string" ? error.response.data : "") ||
                   error?.message || "";
@@ -125,7 +122,6 @@ const describeSignUpError = (error) => {
     return "An unknown error occurred. Please wait 1 minute and try again.";
   }
   
-  // Check if it's an invalid credentials/conflict error first
   if (isInvalidCredentialsError(error)) {
     const status = error.response?.status;
     const serverMsg = error.response?.data?.message ||
@@ -137,12 +133,41 @@ const describeSignUpError = (error) => {
     return serverMsg || "Invalid information provided.";
   }
   
-  // For any other error (network, server down, DB issues, etc.) - generic message
   if (isNetworkError(error)) {
     return "Unable to connect to server. Please wait 1 minute and try again.";
   }
   
   return "Please wait 1 minute before trying again.";
+};
+
+// ─── Rate Limiting ───────────────────────────────────────────────────────────
+const checkRateLimit = (attemptCount, isBlocked, blockedUntil, setIsBlocked, setAttemptCount, setBlockedUntil) => {
+  if (isBlocked) {
+    const remainingTime = Math.ceil((blockedUntil - Date.now()) / 60000);
+    if (remainingTime > 0) {
+      Alert.alert("Too Many Attempts", `Please wait ${remainingTime} minute(s) before trying again.`);
+      return false;
+    } else {
+      setAttemptCount(0);
+      setIsBlocked(false);
+      setBlockedUntil(null);
+      return true;
+    }
+  }
+  return true;
+};
+
+const incrementAttempt = (attemptCount, setAttemptCount, setIsBlocked, setBlockedUntil) => {
+  const newCount = attemptCount + 1;
+  setAttemptCount(newCount);
+  if (newCount >= 3) {
+    const blockTime = Date.now() + 5 * 60 * 1000;
+    setBlockedUntil(blockTime);
+    setIsBlocked(true);
+    Alert.alert("Too Many Attempts", "You've exceeded the maximum attempts. Please wait 5 minutes before trying again.");
+    return false;
+  }
+  return true;
 };
 
 export default function SignUp() {
@@ -157,6 +182,9 @@ export default function SignUp() {
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
   const [focusedField, setFocusedField] = useState(null);
+  const [attemptCount, setAttemptCount] = useState(0);
+  const [blockedUntil, setBlockedUntil] = useState(null);
+  const [isBlocked, setIsBlocked] = useState(false);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(18)).current;
@@ -211,10 +239,12 @@ export default function SignUp() {
   const handleSignUp = async () => {
     if (!validate()) return;
     
+    if (!checkRateLimit(attemptCount, isBlocked, blockedUntil, setIsBlocked, setAttemptCount, setBlockedUntil)) return;
+    
     try {
       setLoading(true);
       const response = await axios.post(
-        `${API_URL}/auth/signup`,
+        `${API_URL}/api/auth/signup`,
         {
           username: username.trim(),
           fullName: fullName.trim(),
@@ -226,18 +256,22 @@ export default function SignUp() {
       
       const data = response.data;
       
+      setAttemptCount(0);
+      setIsBlocked(false);
+      setBlockedUntil(null);
+      
       Alert.alert("Account Created", data.message || "You're all set.", [
         { text: "Sign In", onPress: () => router.replace("/login") },
       ]);
     } catch (error) {
-      // Check if this is an invalid credentials/conflict error
+      incrementAttempt(attemptCount, setAttemptCount, setIsBlocked, setBlockedUntil);
+      
       if (isInvalidCredentialsError(error)) {
         const message = error?.response?.data?.message || 
                         (typeof error?.response?.data === "string" ? error.response.data : "") ||
                         "Username or email already exists.";
         Alert.alert("Sign Up Failed", message);
       } else {
-        // Network or server error - show wait message
         const message = describeSignUpError(error);
         Alert.alert("Sign Up Failed", message);
       }
@@ -255,7 +289,6 @@ export default function SignUp() {
 
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
 
-      // Clear any cached Google session first
       try {
         await GoogleSignin.signOut();
       } catch (signOutErr) {
@@ -265,7 +298,6 @@ export default function SignUp() {
       const response = await GoogleSignin.signIn();
 
       if (!isSuccessResponse(response)) {
-        // User cancelled the sign-in flow
         setGoogleLoading(false);
         return;
       }
@@ -278,7 +310,6 @@ export default function SignUp() {
         return;
       }
 
-      // Isolate the backend call
       let backendResponse;
       try {
         backendResponse = await axios.post(
@@ -319,14 +350,12 @@ export default function SignUp() {
       } else if (isErrorWithCode(error) && error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
         Alert.alert("Sign Up Failed", "Google Play Services unavailable. Please update and try again.");
       } else {
-        // Check if it's an invalid credentials/conflict error from Google
         if (isInvalidCredentialsError(error)) {
           const message = error?.response?.data?.message || 
                           (typeof error?.response?.data === "string" ? error.response.data : "") ||
                           "Sign up failed. Please try again.";
           Alert.alert("Sign Up Failed", message);
         } else {
-          // Network or server error
           const message = describeSignUpError(error);
           Alert.alert("Sign Up Failed", message);
         }

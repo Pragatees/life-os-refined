@@ -18,7 +18,7 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 
-const API_URL = "https://life-os-backend-1ozl.onrender.com/api";
+const API_URL = `${process.env.EXPO_PUBLIC_API_URL}/api`;
 
 // ─── Recurrence (backend-owned) ────────────────────────────────────────────
 // The backend now fully manages recurring tasks via the Master Task

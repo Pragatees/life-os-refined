@@ -41,7 +41,7 @@ const THEMES = {
   },
 };
 
-const API_BASE = "https://life-os-backend-1ozl.onrender.com/api/users";
+const API_BASE = `${process.env.EXPO_PUBLIC_API_URL}/api/users`;
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 // Steps:
