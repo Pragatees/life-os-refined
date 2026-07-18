@@ -50,6 +50,12 @@ export const NOTIFICATION_CHANNELS = {
     description: "Account related notifications",
   },
 
+  ROUTINE: {
+    id: "routine-channel",
+    name: "Daily Routine",
+    description: "Morning motivation, engagement reminders, evening planning and daily summary",
+  },
+
   SYSTEM: {
     id: "system-channel",
     name: "System",
@@ -67,6 +73,7 @@ export const NOTIFICATION_PREFIX = {
   NOTE: "note",
   AI: "ai",
   ACCOUNT: "account",
+  ROUTINE: "routine",
   SYSTEM: "system",
 } as const;
 
@@ -134,6 +141,31 @@ export const DAILY_SCHEDULE = {
 } as const;
 
 // -----------------------------------------------------------------------------
+// Routine Notification Schedule
+// -----------------------------------------------------------------------------
+//
+// Single source of truth for every routine notification's time-of-day.
+// RoutineNotificationService reads exclusively from this table so the
+// schedule can be tuned here without touching service logic.
+// -----------------------------------------------------------------------------
+
+export const ROUTINE_SCHEDULE = {
+  MORNING_MOTIVATION: { hour: 7, minute: 0 },
+
+  ENGAGEMENT_REMINDERS: [
+    { hour: 9, minute: 0 },
+    { hour: 11, minute: 0 },
+    { hour: 13, minute: 0 },
+    { hour: 15, minute: 0 },
+    { hour: 17, minute: 0 },
+  ],
+
+  EVENING_PLANNING: { hour: 18, minute: 0 },
+
+  DAILY_SUMMARY: { hour: 21, minute: 45 },
+} as const;
+
+// -----------------------------------------------------------------------------
 // AI Review Types
 // -----------------------------------------------------------------------------
 
@@ -163,6 +195,7 @@ export const SUPPORTED_NOTIFICATION_TYPES: readonly NotificationType[] = [
   NotificationType.NOTE,
   NotificationType.AI_REVIEW,
   NotificationType.ACCOUNT,
+  NotificationType.ROUTINE,
   NotificationType.SYSTEM,
 ];
 
@@ -190,6 +223,8 @@ export const NOTIFICATION_TITLES = {
   AI_REVIEW: "AI Review",
 
   ACCOUNT: "Account",
+
+  ROUTINE: "LifeOS",
 
   SYSTEM: "LifeOS",
 } as const;
@@ -226,4 +261,6 @@ export const LOGGER_TAG = {
   AI: "AIReviewNotificationService",
 
   ACCOUNT: "AccountNotificationService",
+
+  ROUTINE: "RoutineNotificationService",
 } as const;

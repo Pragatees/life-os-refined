@@ -294,6 +294,7 @@ class NotificationScheduler {
       first.goalId === second.goalId &&
       first.noteDate === second.noteDate &&
       first.reviewType === second.reviewType &&
+      first.routineType === second.routineType &&
       first.notificationType === second.notificationType
     );
   }

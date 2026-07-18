@@ -16,6 +16,7 @@ export enum NotificationType {
   NOTE = "NOTE",
   AI_REVIEW = "AI_REVIEW",
   ACCOUNT = "ACCOUNT",
+  ROUTINE = "ROUTINE",
   SYSTEM = "SYSTEM",
 }
 
@@ -37,6 +38,31 @@ export enum AIReviewType {
   DAILY = "DAILY",
   WEEKLY = "WEEKLY",
   MONTHLY = "MONTHLY",
+}
+
+/**
+ * ============================================================================
+ * Routine Notification Type
+ * ============================================================================
+ *
+ * Each daily routine notification gets its own distinct value — including
+ * each Engagement Reminder time slot. NotificationScheduler.isSamePayload()
+ * matches on this field, so two different time slots must NOT share a value
+ * or scheduling one would cancel the other as a "duplicate".
+ * ============================================================================
+ */
+export enum RoutineNotificationType {
+  MORNING_MOTIVATION = "MORNING_MOTIVATION",
+
+  ENGAGEMENT_09 = "ENGAGEMENT_09",
+  ENGAGEMENT_11 = "ENGAGEMENT_11",
+  ENGAGEMENT_13 = "ENGAGEMENT_13",
+  ENGAGEMENT_15 = "ENGAGEMENT_15",
+  ENGAGEMENT_17 = "ENGAGEMENT_17",
+
+  EVENING_PLANNING = "EVENING_PLANNING",
+
+  DAILY_SUMMARY = "DAILY_SUMMARY",
 }
 
 export enum NotificationPriority {
@@ -88,6 +114,11 @@ export interface NotificationPayload
    * AI Review fields
    */
   reviewType?: AIReviewType;
+
+  /**
+   * Routine notification fields
+   */
+  routineType?: RoutineNotificationType;
 
   /**
    * Optional navigation screen.

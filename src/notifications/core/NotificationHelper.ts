@@ -62,6 +62,16 @@ class NotificationHelper {
     return `${NOTIFICATION_PREFIX.ACCOUNT}_${type}`;
   }
 
+  /**
+   * Routine notification ID.
+   *
+   * routineType is unique per time slot (e.g. ENGAGEMENT_09, ENGAGEMENT_11),
+   * so each routine notification gets a stable, distinct identifier.
+   */
+  getRoutineNotificationId(routineType: string): string {
+    return `${NOTIFICATION_PREFIX.ROUTINE}_${routineType.toLowerCase()}`;
+  }
+
   // ===========================================================================
   // Date Helpers
   // ===========================================================================
@@ -112,6 +122,25 @@ class NotificationHelper {
       second,
       0
     );
+  }
+
+  /**
+   * Returns today's Date at the given hour/minute. If that time has already
+   * passed today, rolls forward to the same time tomorrow.
+   *
+   * Used by recurring daily notifications (e.g. RoutineNotificationService)
+   * that always need "the next occurrence" of a fixed time-of-day.
+   */
+  getNextOccurrence(hour: number, minute: number): Date {
+    const trigger = new Date();
+
+    trigger.setHours(hour, minute, 0, 0);
+
+    if (!this.canSchedule(trigger)) {
+      trigger.setDate(trigger.getDate() + 1);
+    }
+
+    return trigger;
   }
 
   /**

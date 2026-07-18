@@ -46,7 +46,17 @@ export interface UpdateGoalPayload {
 // ================================
 
 interface GoalState {
+  // Full list of the user's goals (backed by GET /api/goals)
   goals: Goal[];
+
+  // Goals scoped to a specific `goalDate` (backed by GET /api/goals/date).
+  // Kept SEPARATE from `goals` on purpose — this is a narrower view and
+  // must never overwrite the full list.
+  goalsByDate: Goal[];
+  goalsByDateLoading: boolean;
+  goalsByDateError: string | null;
+  lastFetchedDate: string | null;
+
   selectedGoal: Goal | null;
 
   loading: boolean;
@@ -58,6 +68,8 @@ interface GoalState {
 
   fetchGoalById: (goalId: string) => Promise<Goal | null>;
 
+  // Returns goals whose `goalDate` matches `date`. Does NOT touch the
+  // full `goals` list — read `goalsByDate` for the result.
   fetchGoalsByDate: (date: string) => Promise<Goal[]>;
 
   // CRUD Operations
@@ -99,6 +111,15 @@ const handleApiError = (error: unknown): string => {
   return "An unexpected error occurred";
 };
 
+// Keep a goal-list state in sync after a create/update/delete without
+// forcing a full refetch. Applied to BOTH `goals` and `goalsByDate` so
+// neither view goes stale relative to the other.
+const upsertInList = (list: Goal[], goal: Goal): Goal[] =>
+  sortGoals([...list.filter((g) => g.id !== goal.id), goal]);
+
+const removeFromList = (list: Goal[], goalId: string): Goal[] =>
+  list.filter((g) => g.id !== goalId);
+
 // ================================
 // Store
 // ================================
@@ -107,6 +128,11 @@ export const useGoalStore = create<GoalState>()(
   persist(
     (set, get) => ({
       goals: [],
+      goalsByDate: [],
+      goalsByDateLoading: false,
+      goalsByDateError: null,
+      lastFetchedDate: null,
+
       selectedGoal: null,
 
       loading: false,
@@ -222,11 +248,12 @@ export const useGoalStore = create<GoalState>()(
 
       // ==========================================
       // Fetch Goals By Date
+      // Scoped view only — writes to `goalsByDate`, never to `goals`.
       // ==========================================
       fetchGoalsByDate: async (
         date: string
       ): Promise<Goal[]> => {
-        set({ loading: true, error: null });
+        set({ goalsByDateLoading: true, goalsByDateError: null });
 
         try {
           const token = await getToken();
@@ -252,12 +279,11 @@ export const useGoalStore = create<GoalState>()(
           const data: Goal[] = await response.json();
           const sorted = sortGoals(data);
 
-          // Update the store so components reading `goals` see the result
           set({
-            goals: sorted,
-            loading: false,
-            error: null,
-            lastFetchedAt: Date.now(),
+            goalsByDate: sorted,
+            goalsByDateLoading: false,
+            goalsByDateError: null,
+            lastFetchedDate: date,
           });
 
           return sorted;
@@ -268,8 +294,8 @@ export const useGoalStore = create<GoalState>()(
           );
 
           set({
-            loading: false,
-            error: handleApiError(error),
+            goalsByDateLoading: false,
+            goalsByDateError: handleApiError(error),
           });
 
           return [];
@@ -306,9 +332,12 @@ export const useGoalStore = create<GoalState>()(
 
           const newGoal: Goal = await response.json();
 
-          // Update goals list
           set((state) => ({
-            goals: sortGoals([...state.goals, newGoal]),
+            goals: upsertInList(state.goals, newGoal),
+            goalsByDate:
+              newGoal.goalDate === state.lastFetchedDate
+                ? upsertInList(state.goalsByDate, newGoal)
+                : state.goalsByDate,
             loading: false,
             error: null,
           }));
@@ -362,13 +391,11 @@ export const useGoalStore = create<GoalState>()(
 
           const updatedGoal: Goal = await response.json();
 
-          // Update goals list
           set((state) => ({
-            goals: sortGoals(
-              state.goals.map((goal) =>
-                goal.id === goalId ? updatedGoal : goal
-              )
-            ),
+            goals: upsertInList(state.goals, updatedGoal),
+            goalsByDate: state.goalsByDate.some((g) => g.id === goalId)
+              ? upsertInList(state.goalsByDate, updatedGoal)
+              : state.goalsByDate,
             selectedGoal:
               state.selectedGoal?.id === goalId
                 ? updatedGoal
@@ -420,9 +447,9 @@ export const useGoalStore = create<GoalState>()(
             throw new Error(`Server Error ${response.status}`);
           }
 
-          // Remove goal from list
           set((state) => ({
-            goals: state.goals.filter((goal) => goal.id !== goalId),
+            goals: removeFromList(state.goals, goalId),
+            goalsByDate: removeFromList(state.goalsByDate, goalId),
             selectedGoal:
               state.selectedGoal?.id === goalId
                 ? null
@@ -464,6 +491,10 @@ export const useGoalStore = create<GoalState>()(
 
         set({
           goals: [],
+          goalsByDate: [],
+          goalsByDateLoading: false,
+          goalsByDateError: null,
+          lastFetchedDate: null,
           selectedGoal: null,
           loading: false,
           error: null,
@@ -478,6 +509,8 @@ export const useGoalStore = create<GoalState>()(
         goals: state.goals,
         selectedGoal: state.selectedGoal,
         lastFetchedAt: state.lastFetchedAt,
+        // goalsByDate is intentionally NOT persisted — it's a transient,
+        // screen-scoped view that should always be refetched fresh.
       }),
     }
   )

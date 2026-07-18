@@ -1,7 +1,17 @@
 // app/(goals)/Viewandedit.tsx
 //
 // Goals "View & Edit" screen/component.
-// Now using Zustand store for state management
+// Uses the Zustand store's full goal list so all registered goals are
+// shown here (filtered only by status tab), not just goals for a single date.
+//
+// - Adds a "Cancelled" filter tab alongside Ongoing / Completed / Upcoming.
+// - Adds a search box to filter goals by name/description within the
+//   currently active status tab.
+// - Goals are sorted in ascending order by deadline (earliest/soonest due
+//   date first); goals with no deadline are pushed to the end.
+// - Completed and Cancelled goals open in a READ-ONLY view — no editing,
+//   no Save button, no status picker interaction, only Delete/Close.
+// - Save button now uses the accent color instead of success.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -20,7 +30,7 @@ import {
   ScrollView,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useGoalStore, Goal, GoalStatus } from "@/store/goals";
+import { useGoalStore, Goal, GoalStatus } from "../../store/goals";
 
 // ─── Theme Tokens ────────────────────────────────────────────────────────────
 const DARK = {
@@ -34,6 +44,7 @@ const DARK = {
   warning: "#FFC24B",
   warningSoft: "#3A2E12",
   danger: "#FF6B5B",
+  dangerSoft: "#3A1F1B",
   textPrimary: "#F5F5F4",
   textSecondary: "#9B9B9F",
   border: "#28282C",
@@ -52,6 +63,7 @@ const BRIGHT = {
   warning: "#F0A93B",
   warningSoft: "#FFF3DD",
   danger: "#EF5A4C",
+  dangerSoft: "#FDE8E6",
   textPrimary: "#1C1C1E",
   textSecondary: "#7A7A80",
   border: "#E6E6E9",
@@ -61,25 +73,45 @@ const BRIGHT = {
 
 type Theme = "bright" | "dark";
 type ModalMode = "loading" | "edit";
+type DisplayStatus = "completed" | "ongoing" | "upcoming" | "cancelled";
 
 // Map your GoalStatus to display status
-const mapStatusToDisplay = (status: GoalStatus): "completed" | "ongoing" | "upcoming" => {
+const mapStatusToDisplay = (status: GoalStatus): DisplayStatus => {
   if (status === "COMPLETED") return "completed";
+  if (status === "CANCELLED") return "cancelled";
   if (status === "STARTED" || status === "IN_PROGRESS") return "ongoing";
   return "upcoming";
 };
 
+// Goals in these display states are read-only — no editing allowed.
+const isReadOnlyStatus = (status: GoalStatus): boolean => {
+  const displayStatus = mapStatusToDisplay(status);
+  return displayStatus === "completed" || displayStatus === "cancelled";
+};
+
+// Turns a "YYYY-MM-DD" (or any parseable) deadline string into a sortable
+// timestamp. Goals with no/invalid deadline sort to the very end.
+const deadlineTimestamp = (deadline?: string): number => {
+  if (!deadline) return Number.POSITIVE_INFINITY;
+  const t = new Date(deadline).getTime();
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+};
+
 interface Props {
+  // Kept for API compatibility with the parent screen (e.g. calendar header),
+  // but no longer used to scope the fetch — this screen intentionally shows
+  // ALL of the user's registered goals, filtered only by status tab.
   selectedDate: string;
   refreshKey: number;
   onRefresh: () => void;
   theme: Theme;
 }
 
-const FILTERS: { id: "completed" | "ongoing" | "upcoming"; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
+const FILTERS: { id: DisplayStatus; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
   { id: "ongoing", label: "Ongoing", icon: "time-outline" },
   { id: "completed", label: "Completed", icon: "checkmark-done-outline" },
   { id: "upcoming", label: "Upcoming", icon: "calendar-outline" },
+  { id: "cancelled", label: "Cancelled", icon: "close-circle-outline" },
 ];
 
 const STATUS_OPTIONS: { value: GoalStatus; label: string }[] = [
@@ -106,28 +138,30 @@ function formatDisplayDate(iso?: string): string {
   }
 }
 
-function formatDateForInput(iso?: string): string {
-  if (!iso) return "";
-  return iso;
-}
-
 // ─── ViewAndEdit (Goals) ────────────────────────────────────────────────────
 export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme }: Props) {
   const C = theme === "bright" ? BRIGHT : DARK;
 
   // ── Zustand Store ──────────────────────────────────────────────────────────
+  // NOTE: `goals` here is the FULL, unscoped list of the user's goals.
+  // We intentionally do NOT use fetchGoalsByDate/goalsByDate on this screen —
+  // that endpoint scopes results to a single `goalDate` and was previously
+  // (incorrectly) overwriting the shared `goals` list, which made this
+  // screen show only "today's" goals instead of everything registered.
   const {
     goals,
     loading,
     error: storeError,
     fetchGoals,
-    fetchGoalsByDate,
     updateGoal,
     deleteGoal,
   } = useGoalStore();
 
   // ── Filter tab state ──────────────────────────────────────────────────
-  const [activeFilter, setActiveFilter] = useState<"completed" | "ongoing" | "upcoming">("ongoing");
+  const [activeFilter, setActiveFilter] = useState<DisplayStatus>("ongoing");
+
+  // ── Search box state ────────────────────────────────────────────────────
+  const [searchQuery, setSearchQuery] = useState("");
 
   // ── Local state for UI ──────────────────────────────────────────────────
   const [refreshing, setRefreshing] = useState(false);
@@ -137,15 +171,19 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
   const [modalVisible, setModalVisible] = useState(false);
   const [mode, setMode] = useState<ModalMode>("loading");
   const [activeGoal, setActiveGoal] = useState<Goal | null>(null);
-  
+
   // Form fields
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [deadline, setDeadline] = useState("");
   const [status, setStatus] = useState<GoalStatus>("CREATED");
-  
+
   const [saving, setSaving] = useState(false);
   const [validationError, setValidationError] = useState<string | null>(null);
+
+  // Whether the goal currently open in the modal is editable.
+  // Completed / Cancelled goals are read-only — no editing allowed.
+  const isEditable = activeGoal ? !isReadOnlyStatus(activeGoal.status) : true;
 
   // ── Pop-up animation state ─────────────────────────────────────────────
   const scaleAnim = useRef(new Animated.Value(0.85)).current;
@@ -189,21 +227,27 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
     [scaleAnim, opacityAnim]
   );
 
-  // ── Load goals from store ──────────────────────────────────────────────
-  const loadGoals = useCallback(async () => {
-    try {
-      setLocalError(null);
-      await fetchGoalsByDate(selectedDate);
-    } catch (error) {
-      console.error("Error loading goals:", error);
-      setLocalError("Unable to load your goals. Please try again.");
-    }
-  }, [selectedDate, fetchGoalsByDate]);
+  // ── Load ALL goals from store ──────────────────────────────────────────
+  const loadGoals = useCallback(
+    async (force = false) => {
+      try {
+        setLocalError(null);
+        await fetchGoals(force);
+      } catch (error) {
+        console.error("Error loading goals:", error);
+        setLocalError("Unable to load your goals. Please try again.");
+      }
+    },
+    [fetchGoals]
+  );
 
   // ── Initial load and refresh ───────────────────────────────────────────
+  // Only refreshKey should force a refetch here — selectedDate no longer
+  // scopes the query, so it's deliberately left out of this effect's deps.
   useEffect(() => {
-    loadGoals();
-  }, [loadGoals, refreshKey, selectedDate]);
+    loadGoals(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [refreshKey]);
 
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
@@ -219,13 +263,27 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
     }
   }, [fetchGoals, onRefresh]);
 
-  // ── Filter goals based on status ──────────────────────────────────────
+  // ── Filter goals by status tab + search box, sorted ascending by date ──
+  // Order: status tab first (shows immediately on load / tab switch),
+  // then narrowed further by the search text (name or description),
+  // then sorted so the soonest-due goal appears first.
   const filteredGoals = useMemo(() => {
-    return goals.filter((g) => {
-      const goalDisplayStatus = mapStatusToDisplay(g.status);
-      return goalDisplayStatus === activeFilter;
-    });
-  }, [goals, activeFilter]);
+    const query = searchQuery.trim().toLowerCase();
+
+    const byStatus = goals.filter((g) => mapStatusToDisplay(g.status) === activeFilter);
+
+    const bySearch = query
+      ? byStatus.filter((g) => {
+          const name = g.goalName?.toLowerCase() || "";
+          const desc = g.description?.toLowerCase() || "";
+          return name.includes(query) || desc.includes(query);
+        })
+      : byStatus;
+
+    return [...bySearch].sort(
+      (a, b) => deadlineTimestamp(a.deadline) - deadlineTimestamp(b.deadline)
+    );
+  }, [goals, activeFilter, searchQuery]);
 
   // ── Open the pop-up modal for a given goal ────────────────────────────
   const handleOpenGoal = (goal: Goal) => {
@@ -252,27 +310,23 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
   const validateForm = (): boolean => {
     setValidationError(null);
 
-    // Validate Goal Name
     if (!title.trim()) {
       setValidationError("Goal Name cannot be empty.");
       return false;
     }
 
-    // Validate Deadline
     if (!deadline.trim()) {
       setValidationError("Deadline cannot be empty.");
       return false;
     }
 
-    // Validate Deadline is not before Goal Date
     if (activeGoal && deadline && activeGoal.goalDate) {
       const deadlineDate = new Date(deadline);
       const goalDate = new Date(activeGoal.goalDate);
-      
-      // Reset time to midnight for fair comparison
+
       deadlineDate.setHours(0, 0, 0, 0);
       goalDate.setHours(0, 0, 0, 0);
-      
+
       if (deadlineDate < goalDate) {
         setValidationError("Deadline must not be before the Goal Date.");
         return false;
@@ -284,16 +338,14 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
 
   // ── Save edited goal using Zustand ────────────────────────────────────
   const saveGoal = async () => {
-    if (!activeGoal) return;
+    if (!activeGoal || !isEditable) return;
 
-    // Validate form
     if (!validateForm()) {
       return;
     }
 
     setSaving(true);
     try {
-      // Prepare payload - only send what backend expects
       const payload = {
         goalName: title.trim(),
         description: description.trim(),
@@ -305,26 +357,26 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
 
       if (result) {
         Alert.alert("Success", "Goal updated successfully.", [
-          { 
-            text: "OK", 
+          {
+            text: "OK",
             onPress: () => {
               closeModal();
-              // Refresh the goal list
-              loadGoals();
               onRefresh?.();
-            }
-          }
+              // No manual refetch needed — updateGoal already
+              // patches the full `goals` list in the store.
+            },
+          },
         ]);
       } else {
         Alert.alert("Error", "Failed to update goal. Please try again.");
       }
     } catch (error: any) {
       console.error("Error saving goal:", error);
-      
-      // Display backend error message if available
-      const errorMessage = error?.response?.data?.message || 
-                          error?.message || 
-                          "Something went wrong. Please try again.";
+
+      const errorMessage =
+        error?.response?.data?.message ||
+        error?.message ||
+        "Something went wrong. Please try again.";
       Alert.alert("Error", errorMessage);
     } finally {
       setSaving(false);
@@ -334,7 +386,7 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
   // ── Delete goal using Zustand ─────────────────────────────────────────
   const handleDeleteGoal = async () => {
     if (!activeGoal) return;
-    
+
     Alert.alert(
       "Delete Goal",
       `Are you sure you want to delete "${activeGoal.goalName}"?`,
@@ -348,23 +400,23 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
               const success = await deleteGoal(activeGoal.id);
               if (success) {
                 Alert.alert("Success", "Goal deleted successfully.", [
-                  { 
-                    text: "OK", 
+                  {
+                    text: "OK",
                     onPress: () => {
                       closeModal();
-                      loadGoals();
                       onRefresh?.();
-                    }
-                  }
+                    },
+                  },
                 ]);
               } else {
                 Alert.alert("Error", "Failed to delete goal.");
               }
             } catch (error: any) {
               console.error("Error deleting goal:", error);
-              const errorMessage = error?.response?.data?.message || 
-                                  error?.message || 
-                                  "Something went wrong.";
+              const errorMessage =
+                error?.response?.data?.message ||
+                error?.message ||
+                "Something went wrong.";
               Alert.alert("Error", errorMessage);
             }
           },
@@ -387,16 +439,16 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
 
       if (result) {
         Alert.alert("Success", "Goal marked as completed!");
-        loadGoals();
         onRefresh?.();
       } else {
         Alert.alert("Error", "Failed to update goal status.");
       }
     } catch (error: any) {
       console.error("Error marking goal complete:", error);
-      const errorMessage = error?.response?.data?.message || 
-                          error?.message || 
-                          "Something went wrong.";
+      const errorMessage =
+        error?.response?.data?.message ||
+        error?.message ||
+        "Something went wrong.";
       Alert.alert("Error", errorMessage);
     }
   };
@@ -406,6 +458,7 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
     const displayStatus = mapStatusToDisplay(status);
     if (displayStatus === "completed") return C.success;
     if (displayStatus === "ongoing") return C.accent;
+    if (displayStatus === "cancelled") return C.danger;
     return C.warning;
   };
 
@@ -413,6 +466,7 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
     const displayStatus = mapStatusToDisplay(status);
     if (displayStatus === "completed") return C.successSoft;
     if (displayStatus === "ongoing") return C.accentSoft;
+    if (displayStatus === "cancelled") return C.dangerSoft;
     return C.warningSoft;
   };
 
@@ -421,17 +475,23 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
   };
 
   const getStatusColorForPicker = (statusValue: GoalStatus) => {
-    switch(statusValue) {
-      case "COMPLETED": return C.success;
-      case "CANCELLED": return C.danger;
+    switch (statusValue) {
+      case "COMPLETED":
+        return C.success;
+      case "CANCELLED":
+        return C.danger;
       case "STARTED":
-      case "IN_PROGRESS": return C.accent;
-      default: return C.warning;
+      case "IN_PROGRESS":
+        return C.accent;
+      default:
+        return C.warning;
     }
   };
 
-  // ── Show loading state ─────────────────────────────────────────────────
-  const isLoading = loading || (goals.length === 0 && !localError && !storeError);
+  // ── Loading state ──────────────────────────────────────────────────────
+  // Only show the full-screen spinner on the very first load (no goals yet).
+  // Subsequent background refreshes use the pull-to-refresh spinner instead.
+  const isInitialLoading = loading && goals.length === 0 && !localError && !storeError;
 
   // ── Render Status Picker ──────────────────────────────────────────────
   const renderStatusPicker = () => (
@@ -443,18 +503,20 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
         {STATUS_OPTIONS.map((option) => (
           <TouchableOpacity
             key={option.value}
-            onPress={() => setStatus(option.value)}
-            activeOpacity={0.7}
+            onPress={() => isEditable && setStatus(option.value)}
+            activeOpacity={isEditable ? 0.7 : 1}
+            disabled={!isEditable}
             style={[
               styles.statusOption,
               {
-                backgroundColor: status === option.value 
-                  ? getStatusColorForPicker(option.value) 
+                backgroundColor: status === option.value
+                  ? getStatusColorForPicker(option.value)
                   : C.surfaceAlt,
-                borderColor: status === option.value 
-                  ? getStatusColorForPicker(option.value) 
+                borderColor: status === option.value
+                  ? getStatusColorForPicker(option.value)
                   : C.border,
                 borderWidth: status === option.value ? 2 : 1,
+                opacity: isEditable ? 1 : 0.6,
               },
             ]}
           >
@@ -462,8 +524,8 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
               style={[
                 styles.statusOptionText,
                 {
-                  color: status === option.value 
-                    ? "#FFFFFF" 
+                  color: status === option.value
+                    ? "#FFFFFF"
                     : C.textSecondary,
                 },
               ]}
@@ -479,6 +541,33 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
   // ── Render ──────────────────────────────────────────────────────────────
   return (
     <View style={{ flex: 1 }}>
+      {/* ── Search box ── */}
+      <View
+        style={[
+          styles.searchBox,
+          { backgroundColor: C.surface, borderColor: C.border },
+        ]}
+      >
+        <Ionicons name="search-outline" size={16} color={C.textSecondary} />
+        <TextInput
+          placeholder={`Search ${activeFilter} goals...`}
+          placeholderTextColor={C.textSecondary}
+          value={searchQuery}
+          onChangeText={setSearchQuery}
+          style={[styles.searchInput, { color: C.textPrimary }]}
+          returnKeyType="search"
+          autoCorrect={false}
+        />
+        {searchQuery.length > 0 && (
+          <TouchableOpacity
+            onPress={() => setSearchQuery("")}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Ionicons name="close-circle" size={16} color={C.textSecondary} />
+          </TouchableOpacity>
+        )}
+      </View>
+
       {/* ── Filter tabs ── */}
       <View style={[styles.filterRow, { backgroundColor: C.surface, borderColor: C.border }]}>
         {FILTERS.map((f) => {
@@ -513,7 +602,7 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
       </View>
 
       {/* ── Goals list ── */}
-      {isLoading ? (
+      {isInitialLoading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color={C.accent} />
           <Text style={[styles.loadingText, { color: C.textSecondary }]}>
@@ -522,10 +611,10 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
         </View>
       ) : (localError || storeError) && goals.length === 0 ? (
         <View style={styles.emptyState}>
-          <Ionicons 
-            name={localError?.includes("login") ? "lock-closed-outline" : "alert-circle-outline"} 
-            size={32} 
-            color={C.textSecondary} 
+          <Ionicons
+            name={localError?.includes("login") ? "lock-closed-outline" : "alert-circle-outline"}
+            size={32}
+            color={C.textSecondary}
           />
           <Text style={[styles.emptyText, { color: C.textSecondary }]}>
             {localError || storeError || "No goals found."}
@@ -539,12 +628,20 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
         </View>
       ) : filteredGoals.length === 0 ? (
         <View style={styles.emptyState}>
-          <Ionicons name="flag-outline" size={32} color={C.textSecondary} />
+          <Ionicons
+            name={searchQuery ? "search-outline" : "flag-outline"}
+            size={32}
+            color={C.textSecondary}
+          />
           <Text style={[styles.emptyText, { color: C.textSecondary }]}>
-            No {activeFilter} goals yet.
+            {searchQuery
+              ? `No ${activeFilter} goals match "${searchQuery}".`
+              : `No ${activeFilter} goals yet.`}
           </Text>
           <Text style={[styles.emptySubText, { color: C.textSecondary }]}>
-            {goals.length > 0 
+            {searchQuery
+              ? "Try a different search term or clear the search box."
+              : goals.length > 0
               ? `Switch to ${goals.some(g => mapStatusToDisplay(g.status) !== activeFilter) ? 'other' : 'any'} tab to see your goals`
               : 'Create your first goal to get started!'}
           </Text>
@@ -569,9 +666,9 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                 activeOpacity={0.8}
                 style={[
                   styles.goalCard,
-                  { 
-                    backgroundColor: C.surface, 
-                    borderColor: C.border, 
+                  {
+                    backgroundColor: C.surface,
+                    borderColor: C.border,
                     shadowColor: C.shadowDark,
                   },
                 ]}
@@ -600,13 +697,13 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                       </Text>
                     </View>
                     <Text style={[styles.dueDateText, { color: C.textSecondary }]}>
-                      <Ionicons name="calendar-outline" size={12} color={C.textSecondary} /> 
-                      {formatDisplayDate(item.deadline)}
+                      <Ionicons name="calendar-outline" size={12} color={C.textSecondary} />
+                      {" "}{formatDisplayDate(item.deadline)}
                     </Text>
                   </View>
                 </View>
 
-                {item.status !== "COMPLETED" && (
+                {item.status !== "COMPLETED" && item.status !== "CANCELLED" && (
                   <TouchableOpacity
                     onPress={() => markComplete(item)}
                     activeOpacity={0.75}
@@ -623,10 +720,10 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
       )}
 
       {/* ── Edit modal: centered pop-up ── */}
-      <Modal 
-        visible={modalVisible} 
-        transparent 
-        animationType="fade" 
+      <Modal
+        visible={modalVisible}
+        transparent
+        animationType="fade"
         onRequestClose={closeModal}
       >
         <TouchableWithoutFeedback onPress={closeModal}>
@@ -643,13 +740,15 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                   },
                 ]}
               >
-                <ScrollView 
+                <ScrollView
                   showsVerticalScrollIndicator={false}
                   contentContainerStyle={styles.modalScrollContent}
                 >
                   <View style={styles.headerRow}>
                     <View style={{ flex: 1 }}>
-                      <Text style={[styles.eyebrow, { color: C.accent }]}>Edit Goal</Text>
+                      <Text style={[styles.eyebrow, { color: C.accent }]}>
+                        {isEditable ? "Edit Goal" : "View Goal"}
+                      </Text>
                       <Text style={[styles.dateLabel, { color: C.textPrimary }]} numberOfLines={1}>
                         {activeGoal?.goalName || "Goal"}
                       </Text>
@@ -664,10 +763,10 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                       onPress={closeModal}
                       activeOpacity={0.75}
                       style={[
-                        styles.closeBtn, 
-                        { 
-                          backgroundColor: C.surfaceAlt, 
-                          borderColor: C.border 
+                        styles.closeBtn,
+                        {
+                          backgroundColor: C.surfaceAlt,
+                          borderColor: C.border
                         }
                       ]}
                     >
@@ -681,7 +780,17 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                     </View>
                   ) : (
                     <>
-                      {/* Validation Error */}
+                      {!isEditable && (
+                        <View style={[styles.readOnlyBanner, { backgroundColor: C.surfaceAlt, borderColor: C.border }]}>
+                          <Ionicons name="lock-closed-outline" size={16} color={C.textSecondary} />
+                          <Text style={[styles.readOnlyBannerText, { color: C.textSecondary }]}>
+                            {activeGoal?.status === "CANCELLED"
+                              ? "This goal is cancelled and can no longer be edited."
+                              : "This goal is completed and can no longer be edited."}
+                          </Text>
+                        </View>
+                      )}
+
                       {validationError && (
                         <View style={[styles.validationError, { backgroundColor: C.danger + '20' }]}>
                           <Ionicons name="alert-circle" size={20} color={C.danger} />
@@ -699,16 +808,18 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                         placeholder="Enter goal title..."
                         placeholderTextColor={C.textSecondary}
                         value={title}
+                        editable={isEditable}
                         onChangeText={(text) => {
                           setTitle(text);
                           if (validationError) setValidationError(null);
                         }}
                         style={[
                           styles.inputSingle,
-                          { 
-                            backgroundColor: C.surfaceAlt, 
+                          {
+                            backgroundColor: C.surfaceAlt,
                             borderColor: validationError && !title.trim() ? C.danger : C.border,
                             color: C.textPrimary,
+                            opacity: isEditable ? 1 : 0.6,
                           },
                         ]}
                       />
@@ -722,13 +833,15 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                         placeholderTextColor={C.textSecondary}
                         multiline
                         value={description}
+                        editable={isEditable}
                         onChangeText={setDescription}
                         style={[
                           styles.input,
-                          { 
-                            backgroundColor: C.surfaceAlt, 
-                            borderColor: C.border, 
+                          {
+                            backgroundColor: C.surfaceAlt,
+                            borderColor: C.border,
                             color: C.textPrimary,
+                            opacity: isEditable ? 1 : 0.6,
                           },
                         ]}
                       />
@@ -741,16 +854,18 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                         placeholder="YYYY-MM-DD"
                         placeholderTextColor={C.textSecondary}
                         value={deadline}
+                        editable={isEditable}
                         onChangeText={(text) => {
                           setDeadline(text);
                           if (validationError) setValidationError(null);
                         }}
                         style={[
                           styles.inputSingle,
-                          { 
-                            backgroundColor: C.surfaceAlt, 
+                          {
+                            backgroundColor: C.surfaceAlt,
                             borderColor: validationError && !deadline.trim() ? C.danger : C.border,
                             color: C.textPrimary,
+                            opacity: isEditable ? 1 : 0.6,
                           },
                         ]}
                       />
@@ -765,9 +880,9 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                           activeOpacity={0.85}
                           style={[
                             styles.actionBtn,
-                            { 
-                              flex: 0.5, 
-                              backgroundColor: C.danger, 
+                            {
+                              flex: isEditable ? 0.5 : 1,
+                              backgroundColor: C.danger,
                               opacity: saving ? 0.5 : 1,
                             },
                           ]}
@@ -784,43 +899,46 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
                           activeOpacity={0.85}
                           style={[
                             styles.actionBtn,
-                            { 
-                              flex: 0.5, 
-                              backgroundColor: C.surfaceAlt, 
-                              borderWidth: 1, 
+                            {
+                              flex: isEditable ? 0.5 : 1,
+                              backgroundColor: C.surfaceAlt,
+                              borderWidth: 1,
                               borderColor: C.border,
                             },
                           ]}
                         >
                           <Text style={[styles.actionLabel, { color: C.textPrimary }]}>
-                            Cancel
+                            {isEditable ? "Cancel" : "Close"}
                           </Text>
                         </TouchableOpacity>
 
-                        <TouchableOpacity
-                          onPress={saveGoal}
-                          disabled={saving}
-                          activeOpacity={0.85}
-                          style={[
-                            styles.actionBtn,
-                            { 
-                              flex: 1, 
-                              backgroundColor: C.success, 
-                              opacity: saving ? 0.7 : 1,
-                            },
-                          ]}
-                        >
-                          {saving ? (
-                            <ActivityIndicator color="#FFFFFF" />
-                          ) : (
-                            <>
-                              <Ionicons name="checkmark-circle-outline" size={18} color="#FFFFFF" />
-                              <Text style={[styles.actionLabel, { color: "#FFFFFF" }]}>
-                                Save
-                              </Text>
-                            </>
-                          )}
-                        </TouchableOpacity>
+                        {/* Save is only shown for editable (non-completed, non-cancelled) goals */}
+                        {isEditable && (
+                          <TouchableOpacity
+                            onPress={saveGoal}
+                            disabled={saving}
+                            activeOpacity={0.85}
+                            style={[
+                              styles.actionBtn,
+                              {
+                                flex: 1,
+                                backgroundColor: C.accent,
+                                opacity: saving ? 0.7 : 1,
+                              },
+                            ]}
+                          >
+                            {saving ? (
+                              <ActivityIndicator color="#FFFFFF" />
+                            ) : (
+                              <>
+                                <Ionicons name="checkmark-circle-outline" size={18} color="#FFFFFF" />
+                                <Text style={[styles.actionLabel, { color: "#FFFFFF" }]}>
+                                  Save
+                                </Text>
+                              </>
+                            )}
+                          </TouchableOpacity>
+                        )}
                       </View>
                     </>
                   )}
@@ -836,6 +954,22 @@ export default function ViewAndEdit({ selectedDate, refreshKey, onRefresh, theme
 
 // ─── Styles ─────────────────────────────────────────────────────────────────
 const styles = StyleSheet.create({
+  searchBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    borderWidth: 1,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 10,
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    padding: 0,
+  },
+
   filterRow: {
     flexDirection: "row",
     borderRadius: 18,
@@ -843,9 +977,11 @@ const styles = StyleSheet.create({
     padding: 6,
     marginBottom: 14,
     gap: 6,
+    flexWrap: "wrap",
   },
   filterTab: {
-    flex: 1,
+    flexGrow: 1,
+    flexBasis: "45%",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
@@ -1079,6 +1215,20 @@ const styles = StyleSheet.create({
   },
   validationErrorText: {
     fontSize: 13,
+    fontWeight: "600",
+    flex: 1,
+  },
+  readOnlyBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    padding: 12,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 12,
+    gap: 8,
+  },
+  readOnlyBannerText: {
+    fontSize: 12,
     fontWeight: "600",
     flex: 1,
   },
