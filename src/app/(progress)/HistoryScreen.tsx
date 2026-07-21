@@ -15,6 +15,7 @@ import {
   StatusBar,
   Platform,
 } from "react-native";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
 import { LinearGradient } from "expo-linear-gradient";
 
@@ -29,6 +30,12 @@ type TabType = "DAY" | "WEEK" | "MONTH";
 type Theme = "dark" | "bright";
 
 interface HistoryScreenProps {
+  // Both are optional and UNCONTROLLED by default: when this screen is
+  // reached via router.push("/HistoryScreen") (as it is from the Sidebar
+  // menu), no props are passed at all, so this component loads and owns
+  // its own theme from AsyncStorage — the same source of truth GoalScreen
+  // reads/writes to. If a parent ever DOES pass `theme` explicitly, that
+  // takes over as a controlled value (see the sync effect below).
   theme?: Theme;
   onThemeChange?: (theme: Theme) => void;
 }
@@ -84,18 +91,53 @@ const TABS: { id: TabType; label: string; icon: keyof typeof Ionicons.glyphMap }
 
 const getSidebarWidth = () => Math.min(300, Dimensions.get("window").width * 0.8);
 
-export default function HistoryScreen({ theme = "dark", onThemeChange }: HistoryScreenProps) {
-  // ── Local theme state (seeded from prop, optionally synced upward) ───────
-  const [internalTheme, setInternalTheme] = useState<Theme>(theme);
+export default function HistoryScreen({ theme: themeProp, onThemeChange }: HistoryScreenProps) {
+  // ── Theme state ────────────────────────────────────────────────────────
+  // Seed synchronously with whatever we have (an explicit prop, or "dark")
+  // so there's no undefined flash, then correct it from AsyncStorage right
+  // after mount — same pattern as GoalScreen.
+  const [internalTheme, setInternalTheme] = useState<Theme>(themeProp ?? "dark");
+  const [themeLoaded, setThemeLoaded] = useState(false);
   const [headerAnimationComplete, setHeaderAnimationComplete] = useState(false);
 
   // ── Header entrance animation ──────────────────────────────────────────────
   const headerFade = useRef(new Animated.Value(0)).current;
   const headerSlide = useRef(new Animated.Value(-8)).current;
 
+  // ── Load persisted theme on mount (uncontrolled/default path) ────────────
+  // This is what was missing before: when this screen is opened via routing
+  // (no props passed at all), it used to silently default to "dark" and
+  // ignore anything saved by GoalScreen/Sidebar. Now it checks storage too.
   useEffect(() => {
-    setInternalTheme(theme);
-  }, [theme]);
+    let cancelled = false;
+    const loadTheme = async () => {
+      try {
+        const stored = await AsyncStorage.getItem("theme");
+        if (!cancelled && (stored === "bright" || stored === "dark")) {
+          setInternalTheme(stored);
+        }
+      } catch (error) {
+        console.error("Error loading theme:", error);
+      } finally {
+        if (!cancelled) setThemeLoaded(true);
+      }
+    };
+    loadTheme();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // ── Controlled override ───────────────────────────────────────────────
+  // If (and only if) a parent explicitly passes `theme`, treat this as a
+  // controlled component and let that value win over whatever storage said.
+  // In the common case (routed screen, no props) themeProp is undefined,
+  // so this never fires and the AsyncStorage-loaded value stands.
+  useEffect(() => {
+    if (themeProp !== undefined) {
+      setInternalTheme(themeProp);
+    }
+  }, [themeProp]);
 
   useEffect(() => {
     Animated.parallel([
@@ -206,6 +248,22 @@ export default function HistoryScreen({ theme = "dark", onThemeChange }: History
   }, [refresh]);
 
   const changeTab = (tab: TabType) => setSelectedTab(tab);
+
+  // ── Avoid a flash of the wrong theme while AsyncStorage resolves ────────
+  if (!themeLoaded) {
+    return (
+      <View style={[styles.center, { flex: 1, backgroundColor: DARK.bg }]}>
+        <View
+          style={[
+            styles.loadingClay,
+            { backgroundColor: DARK.surface, shadowColor: DARK.shadowDark },
+          ]}
+        >
+          <ActivityIndicator size="large" color={DARK.accent} />
+        </View>
+      </View>
+    );
+  }
 
   return (
     <View

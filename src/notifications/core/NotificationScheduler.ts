@@ -6,6 +6,16 @@
  * Handles scheduling and cancellation of notifications.
  *
  * This is the ONLY file that directly communicates with Expo Notifications.
+ *
+ * FIX: schedule() awaited cancelByPayload() — which itself scans the full
+ * pending-notification list via getAllScheduledNotificationsAsync() — before
+ * calling scheduleNotificationAsync(). For short/near-now triggers (e.g. a
+ * task's "immediate" reminder), if that scan+cancel took longer than the
+ * time remaining until the trigger, the notification would silently never
+ * fire (trigger already in the past by the time it reached the native
+ * call), with no error surfaced anywhere. schedule() now re-validates the
+ * trigger immediately before the native call and logs a warning if it
+ * expired while waiting.
  * ============================================================================
  */
 
@@ -44,8 +54,23 @@ class NotificationScheduler {
         return null;
       }
 
-      // Prevent duplicate notification before scheduling
+      // Prevent duplicate notification before scheduling.
+      // NOTE: this does a full getAllScheduledNotificationsAsync() scan —
+      // see the re-validation below for why that matters.
       await this.cancelByPayload(notification.content.payload);
+
+      // FIX: re-validate immediately before the native call. The scan +
+      // cancel above is an unbounded-latency await; for short/near-now
+      // triggers the deadline may have already passed while we were
+      // waiting on it.
+      if (!NotificationHelper.canSchedule(notification.trigger)) {
+        NotificationLogger.warn(
+          LOGGER_TAG.SCHEDULER,
+          "Trigger expired while cancelling duplicate notifications — skipping schedule.",
+          notification
+        );
+        return null;
+      }
 
       const identifier =
         await Notifications.scheduleNotificationAsync({
@@ -116,32 +141,42 @@ class NotificationScheduler {
     try {
       const pending = await this.getPending();
 
-      for (const notification of pending) {
-        const data =
-          notification.content.data as NotificationPayload;
+      const matches = pending.filter((notification) =>
+        this.isSamePayload(
+          notification.content.data as NotificationPayload,
+          payload
+        )
+      );
 
-        if (!this.isSamePayload(data, payload)) {
-          continue;
-        }
+      if (matches.length === 0) {
+        return;
+      }
 
-        await Notifications.cancelScheduledNotificationAsync(
-          notification.identifier
+      // Cancel matches in parallel instead of sequentially — reduces the
+      // total latency of this call, which directly reduces the window in
+      // which a near-now trigger (see schedule() fix above) can expire
+      // while we wait.
+      await Promise.all(
+        matches.map((notification) =>
+          Notifications.cancelScheduledNotificationAsync(
+            notification.identifier
+          )
+        )
+      );
+
+      for (const notification of matches) {
+        NotificationLogger.notificationCancelled(notification.identifier);
+      }
+
+      if (
+        payload.type === NotificationType.TASK &&
+        payload.taskId
+      ) {
+        NotificationLogger.duplicatePrevented(
+          payload.taskId,
+          payload.notificationType ??
+            TaskNotificationType.REMINDER
         );
-
-        NotificationLogger.notificationCancelled(
-          notification.identifier
-        );
-
-        if (
-          payload.type === NotificationType.TASK &&
-          payload.taskId
-        ) {
-          NotificationLogger.duplicatePrevented(
-            payload.taskId,
-            payload.notificationType ??
-              TaskNotificationType.REMINDER
-          );
-        }
       }
     } catch (error) {
       NotificationLogger.error(
@@ -160,26 +195,23 @@ class NotificationScheduler {
   async cancelTaskNotifications(
     taskId: string
   ): Promise<void> {
-    await this.cancelByPayload({
-      type: NotificationType.TASK,
-      taskId,
-      notificationType:
-        TaskNotificationType.REMINDER,
-    });
-
-    await this.cancelByPayload({
-      type: NotificationType.TASK,
-      taskId,
-      notificationType:
-        TaskNotificationType.DUE,
-    });
-
-    await this.cancelByPayload({
-      type: NotificationType.TASK,
-      taskId,
-      notificationType:
-        TaskNotificationType.OVERDUE,
-    });
+    await Promise.all([
+      this.cancelByPayload({
+        type: NotificationType.TASK,
+        taskId,
+        notificationType: TaskNotificationType.REMINDER,
+      }),
+      this.cancelByPayload({
+        type: NotificationType.TASK,
+        taskId,
+        notificationType: TaskNotificationType.DUE,
+      }),
+      this.cancelByPayload({
+        type: NotificationType.TASK,
+        taskId,
+        notificationType: TaskNotificationType.OVERDUE,
+      }),
+    ]);
 
     NotificationLogger.taskCancelled(taskId);
   }
@@ -310,21 +342,22 @@ class NotificationScheduler {
     try {
       const pending = await this.getPending();
 
-      for (const notification of pending) {
+      const matches = pending.filter((notification) => {
         const payload =
           notification.content.data as NotificationPayload;
+        return payload.type === type;
+      });
 
-        if (payload.type !== type) {
-          continue;
-        }
+      await Promise.all(
+        matches.map((notification) =>
+          Notifications.cancelScheduledNotificationAsync(
+            notification.identifier
+          )
+        )
+      );
 
-        await Notifications.cancelScheduledNotificationAsync(
-          notification.identifier
-        );
-
-        NotificationLogger.notificationCancelled(
-          notification.identifier
-        );
+      for (const notification of matches) {
+        NotificationLogger.notificationCancelled(notification.identifier);
       }
 
       NotificationLogger.info(

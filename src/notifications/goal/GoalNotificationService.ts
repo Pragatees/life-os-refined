@@ -4,6 +4,17 @@
  * ============================================================================
  *
  * Handles all Goal notification operations.
+ *
+ * FIX: syncGoals() now guards against overlapping/re-entrant calls, the
+ * same way TaskNotificationService.syncTasks() does — otherwise
+ * NotificationBootstrap.synchronize() and any screen-level fetchGoals()
+ * firing close together on cold start can race on cancel/reschedule for
+ * the same goal notification IDs.
+ *
+ * NOTE: the "notification failure looks like a save failure" bug is NOT in
+ * this file — it's in store/goals.ts, where createGoal/updateGoal/deleteGoal
+ * call into this service inside the same try block as the network request.
+ * See the corrected store/goals.ts for that fix.
  * ============================================================================
  */
 
@@ -20,6 +31,9 @@ import {
 
 class GoalNotificationService {
   private initialized = false;
+
+  /** Guards against overlapping syncGoals() calls racing each other. */
+  private syncInFlight: Promise<void> | null = null;
 
   /**
    * ===========================================================================
@@ -45,6 +59,20 @@ class GoalNotificationService {
    * ===========================================================================
    */
   async syncGoals(): Promise<void> {
+    if (this.syncInFlight) {
+      return this.syncInFlight;
+    }
+
+    this.syncInFlight = this.doSyncGoals();
+
+    try {
+      await this.syncInFlight;
+    } finally {
+      this.syncInFlight = null;
+    }
+  }
+
+  private async doSyncGoals(): Promise<void> {
     try {
       const { goals } = useGoalStore.getState();
 
@@ -292,9 +320,7 @@ class GoalNotificationService {
     try {
       const { goals } = useGoalStore.getState();
 
-      await Promise.all(
-        goals.map((goal) => this.cancelGoal(goal.id))
-      );
+      await Promise.all(goals.map((goal) => this.cancelGoal(goal.id)));
 
       NotificationLogger.info(
         LOGGER_TAG.GOAL,

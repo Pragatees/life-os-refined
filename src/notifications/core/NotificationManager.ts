@@ -10,9 +10,15 @@
  * ✓ Configure Expo Notifications
  * ✓ Request permissions
  * ✓ Create notification channels
- * ✓ Register notification listeners
+ * ✓ Register the FOREGROUND "received" listener (logging only)
  * ✓ Clear badge count
  * ✓ Cleanup listeners
+ *
+ * FIX: This file used to ALSO register its own
+ * addNotificationResponseReceivedListener (tap handler), duplicating the
+ * one owned by NotificationResponseService. Both fired on every tap. Tap
+ * handling (navigation) now belongs exclusively to NotificationResponseService
+ * — this file only logs foreground "received" events.
  *
  * Contains NO business logic.
  * ============================================================================
@@ -33,9 +39,6 @@ class NotificationManager {
   private initialized = false;
 
   private notificationReceivedSubscription?:
-    Notifications.EventSubscription;
-
-  private notificationResponseSubscription?:
     Notifications.EventSubscription;
 
   /**
@@ -109,29 +112,40 @@ class NotificationManager {
     const channels = Object.values(NOTIFICATION_CHANNELS);
 
     for (const channel of channels) {
-      await Notifications.setNotificationChannelAsync(
-        channel.id,
-        {
-          name: channel.name,
-          description: channel.description,
+      try {
+        await Notifications.setNotificationChannelAsync(
+          channel.id,
+          {
+            name: channel.name,
+            description: channel.description,
 
-          importance: Notifications.AndroidImportance.HIGH,
+            importance: Notifications.AndroidImportance.HIGH,
 
-          vibrationPattern: [0, 250, 250, 250],
+            vibrationPattern: [0, 250, 250, 250],
 
-          enableLights: true,
+            enableLights: true,
 
-          enableVibrate: true,
+            enableVibrate: true,
 
-          lockscreenVisibility:
-            Notifications.AndroidNotificationVisibility.PUBLIC,
-        }
-      );
+            lockscreenVisibility:
+              Notifications.AndroidNotificationVisibility.PUBLIC,
+          }
+        );
 
-      NotificationLogger.info(
-        LOGGER_TAG.MANAGER,
-        `Created channel: ${channel.name}`
-      );
+        NotificationLogger.info(
+          LOGGER_TAG.MANAGER,
+          `Created channel: ${channel.name}`
+        );
+      } catch (error) {
+        // Previously a failure here would abort the whole loop, silently
+        // leaving later channels never created. Each channel is now
+        // independent so one failure doesn't cascade.
+        NotificationLogger.error(
+          LOGGER_TAG.MANAGER,
+          `Failed to create channel: ${channel.name}`,
+          error
+        );
+      }
     }
   }
 
@@ -139,6 +153,10 @@ class NotificationManager {
    * ===========================================================================
    * Register Listeners
    * ===========================================================================
+   *
+   * ONLY the foreground "received" listener lives here (for logging /
+   * debugging visibility). Tap/response handling is owned exclusively by
+   * NotificationResponseService — do not add a response listener here.
    */
   private registerListeners(): void {
     this.notificationReceivedSubscription =
@@ -148,15 +166,6 @@ class NotificationManager {
             LOGGER_TAG.MANAGER,
             "Notification received.",
             notification
-          );
-        }
-      );
-
-    this.notificationResponseSubscription =
-      Notifications.addNotificationResponseReceivedListener(
-        (response) => {
-          NotificationLogger.notificationClicked(
-            response.notification.request.content.data
           );
         }
       );
@@ -186,10 +195,7 @@ class NotificationManager {
    */
   dispose(): void {
     this.notificationReceivedSubscription?.remove();
-    this.notificationResponseSubscription?.remove();
-
     this.notificationReceivedSubscription = undefined;
-    this.notificationResponseSubscription = undefined;
 
     this.initialized = false;
 

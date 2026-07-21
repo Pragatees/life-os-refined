@@ -7,6 +7,12 @@
  *
  * Schedules ONE reminder every day at 9:30 PM.
  * The notification message depends on whether today's journal exists.
+ *
+ * NO FUNCTIONAL BUG FOUND in this file — it was already correctly guarded
+ * (typeof checks + try/catch) in the store layer that calls it. Added only
+ * a syncNotes() in-flight guard for consistency with the other services,
+ * since NotificationBootstrap and note-save flows could in theory overlap
+ * on a slow cold start.
  * ============================================================================
  */
 
@@ -23,6 +29,9 @@ class NoteNotificationService {
 
   private readonly HOUR = 21;
   private readonly MINUTE = 30;
+
+  /** Guards against overlapping syncNotes() calls racing each other. */
+  private syncInFlight: Promise<void> | null = null;
 
   /**
    * ===========================================================================
@@ -68,6 +77,20 @@ class NoteNotificationService {
    * Called by NotificationBootstrap.
    */
   async syncNotes(): Promise<void> {
+    if (this.syncInFlight) {
+      return this.syncInFlight;
+    }
+
+    this.syncInFlight = this.doSyncNotes();
+
+    try {
+      await this.syncInFlight;
+    } finally {
+      this.syncInFlight = null;
+    }
+  }
+
+  private async doSyncNotes(): Promise<void> {
     try {
       await this.scheduleTodayReminder();
       NotificationLogger.info(
@@ -234,70 +257,3 @@ class NoteNotificationService {
 
 // Export singleton instance
 export default NoteNotificationService.getInstance();
-
-/**
- * ===========================================================================
- * USAGE EXAMPLES
- * ===========================================================================
- *
- * // In NotificationBootstrap:
- * await NoteNotificationService.initialize();
- * await NoteNotificationService.syncNotes();
- *
- * // After creating/updating/deleting a note:
- * await NoteNotificationService.onNoteCreated();
- * await NoteNotificationService.onNoteUpdated();
- * await NoteNotificationService.onNoteDeleted();
- *
- * ===========================================================================
- * RUNTIME FLOW
- * ===========================================================================
- *
- * App Starts
- *      │
- *      ▼
- * NotificationBootstrap
- *      │
- *      ▼
- * NoteNotificationService.syncNotes()
- *      │
- *      ▼
- * Schedule ONE notification for today (9:30 PM)
- *      │
- *      ▼
- * User creates / edits / deletes today's journal
- *      │
- *      ▼
- * refreshTodayReminder()
- *      │
- *      ▼
- * Cancel previous reminder
- *      │
- *      ▼
- * Schedule new reminder
- *
- * ===========================================================================
- * NOTIFICATION MESSAGES
- * ===========================================================================
- *
- * If today's journal DOES NOT exist:
- * Title: 📝 Daily Journal Reminder
- * Body: Don't forget to write today's journal before your day ends.
- *
- * If today's journal ALREADY exists:
- * Title: 📝 Journal Completed
- * Body: Great work! You've already written today's journal.
- *
- * ===========================================================================
- * RESULT
- * ===========================================================================
- *
- * ✔ Only ONE journal reminder exists.
- * ✔ Duplicate reminders are prevented.
- * ✔ Reminder content updates whenever today's note changes.
- * ✔ Works with NotificationBootstrap.
- * ✔ Integrates with the existing NotificationScheduler.
- * ✔ Singleton pattern prevents multiple instances.
- *
- * ===========================================================================
- */

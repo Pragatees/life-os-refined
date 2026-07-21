@@ -4,6 +4,15 @@
  * ============================================================================
  *
  * Handles account-related notifications.
+ *
+ * FIX: These were all scheduled with `trigger: new Date(Date.now() + 1000)`
+ * (1 second out) via NotificationScheduler.schedule(), which internally
+ * awaits cancelByPayload() (a full pending-list scan) before the native
+ * call. Same race as TaskNotificationService's old "immediate reminder" —
+ * on a loaded release-build JS thread, the 1-second trigger could expire
+ * before scheduleNotificationAsync() actually ran, silently dropping the
+ * notification. Buffer widened to 5 seconds, matching
+ * TASK_REMINDER.IMMEDIATE_BUFFER_SECONDS, for consistency across the app.
  * ============================================================================
  */
 
@@ -12,7 +21,10 @@ import NotificationScheduler from "../core/NotificationScheduler";
 
 import { NotificationType } from "../core/NotificationTypes";
 
-import { LOGGER_TAG } from "../core/NotificationConstants";
+import { LOGGER_TAG, TASK_REMINDER } from "../core/NotificationConstants";
+
+const IMMEDIATE_TRIGGER_MS =
+  TASK_REMINDER.IMMEDIATE_BUFFER_SECONDS * 1000;
 
 class AccountNotificationService {
   private initialized = false;
@@ -44,7 +56,7 @@ class AccountNotificationService {
     try {
       await NotificationScheduler.schedule({
         id: "account_password_changed",
-        trigger: new Date(Date.now() + 1000),
+        trigger: new Date(Date.now() + IMMEDIATE_TRIGGER_MS),
         content: {
           title: "🔒 Password Updated",
           body: "Your account password has been changed successfully.",
@@ -76,7 +88,7 @@ class AccountNotificationService {
     try {
       await NotificationScheduler.schedule({
         id: "account_email_changed",
-        trigger: new Date(Date.now() + 1000),
+        trigger: new Date(Date.now() + IMMEDIATE_TRIGGER_MS),
         content: {
           title: "📧 Email Updated",
           body: `Your email has been changed to ${newEmail}.`,
@@ -108,7 +120,7 @@ class AccountNotificationService {
     try {
       await NotificationScheduler.schedule({
         id: "account_profile_updated",
-        trigger: new Date(Date.now() + 1000),
+        trigger: new Date(Date.now() + IMMEDIATE_TRIGGER_MS),
         content: {
           title: "👤 Profile Updated",
           body: "Your profile has been updated successfully.",
@@ -140,7 +152,7 @@ class AccountNotificationService {
     try {
       await NotificationScheduler.schedule({
         id: "account_deleted",
-        trigger: new Date(Date.now() + 1000),
+        trigger: new Date(Date.now() + IMMEDIATE_TRIGGER_MS),
         content: {
           title: "🗑️ Account Deleted",
           body: "Your account has been deleted successfully.",
@@ -193,11 +205,6 @@ class AccountNotificationService {
   /**
    * ===========================================================================
    * Resynchronize Account Notifications
-   * ===========================================================================
-   *
-   * Clears any pending account notifications.
-   * Since account notifications are immediate events,
-   * they are not automatically rescheduled.
    * ===========================================================================
    */
   async resync(): Promise<void> {

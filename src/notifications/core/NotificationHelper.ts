@@ -7,6 +7,12 @@
  *
  * This file contains NO Expo Notification logic.
  * It only provides reusable utility functions.
+ *
+ * IMPORTANT: getReminderOffset() / getSmartReminderTrigger() are the ONLY
+ * place the ">15 / 6-14 / <=5 minute" smart-reminder rule is implemented.
+ * Do not reimplement this branching anywhere else (TaskNotificationService
+ * previously duplicated it — that copy has been removed and now calls into
+ * this file instead, so the rule only has to be fixed in one place).
  * ============================================================================
  */
 import {
@@ -196,72 +202,88 @@ class NotificationHelper {
   }
 
   // ===========================================================================
-// Task Notification Helpers
-// ===========================================================================
+  // Task Notification Helpers
+  // ===========================================================================
 
-/**
- * Returns the remaining minutes until the task starts.
- */
-getRemainingMinutes(taskDateTime: Date): number {
-  return Math.floor(
-    (taskDateTime.getTime() - Date.now()) / (60 * 1000)
-  );
-}
-
-/**
- * Returns true if reminder should be sent immediately.
- */
-shouldSendImmediateReminder(taskDateTime: Date): boolean {
-  return (
-    this.getRemainingMinutes(taskDateTime) <=
-    TASK_REMINDER.IMMEDIATE_THRESHOLD
-  );
-}
-
-/**
- * Returns the reminder offset (minutes) based on the task start time.
- *
- * >15 mins -> 15 mins before
- * 6-14 mins -> 5 mins before
- * <=5 mins -> Immediate
- */
-getReminderOffset(taskDateTime: Date): number {
-  const remaining = this.getRemainingMinutes(taskDateTime);
-
-  if (remaining <= TASK_REMINDER.IMMEDIATE_THRESHOLD) {
-    return 0;
+  /**
+   * Returns the remaining minutes until the task starts.
+   */
+  getRemainingMinutes(taskDateTime: Date): number {
+    return Math.floor(
+      (taskDateTime.getTime() - Date.now()) / (60 * 1000)
+    );
   }
 
-  if (remaining <= TASK_REMINDER.DEFAULT_BEFORE) {
-    return TASK_REMINDER.SHORT_BEFORE;
+  /**
+   * Returns true if reminder should be sent immediately.
+   */
+  shouldSendImmediateReminder(taskDateTime: Date): boolean {
+    return (
+      this.getRemainingMinutes(taskDateTime) <=
+      TASK_REMINDER.IMMEDIATE_THRESHOLD
+    );
   }
 
-  return TASK_REMINDER.DEFAULT_BEFORE;
-}
+  /**
+   * Returns the reminder offset (minutes) based on the task start time.
+   *
+   * >15 mins -> 15 mins before
+   * 6-14 mins -> 5 mins before
+   * <=5 mins -> Immediate (0)
+   *
+   * This is the SINGLE SOURCE OF TRUTH for the smart-reminder rule.
+   */
+  getReminderOffset(taskDateTime: Date): number {
+    const remaining = this.getRemainingMinutes(taskDateTime);
 
-/**
- * Returns the correct reminder trigger.
- */
-getSmartReminderTrigger(taskDateTime: Date): Date {
-  const offset = this.getReminderOffset(taskDateTime);
+    if (remaining <= TASK_REMINDER.IMMEDIATE_THRESHOLD) {
+      return 0;
+    }
 
-  if (offset === 0) {
-    return new Date(Date.now() + 1000);
+    if (remaining <= TASK_REMINDER.DEFAULT_BEFORE) {
+      return TASK_REMINDER.SHORT_BEFORE;
+    }
+
+    return TASK_REMINDER.DEFAULT_BEFORE;
   }
 
-  return new Date(
-    taskDateTime.getTime() - offset * 60 * 1000
-  );
-}
+  /**
+   * Returns the correct reminder trigger, and the offset that produced it,
+   * so callers can build an accurate notification body without
+   * re-deriving the offset themselves.
+   */
+  getSmartReminderTrigger(taskDateTime: Date): {
+    trigger: Date;
+    offsetMinutes: number;
+    isImmediate: boolean;
+  } {
+    const offset = this.getReminderOffset(taskDateTime);
 
-/**
- * Returns the task notification type.
- */
-getTaskNotificationType(
-  type: keyof typeof TASK_NOTIFICATION_TYPES
-): string {
-  return TASK_NOTIFICATION_TYPES[type];
-}
+    if (offset === 0) {
+      return {
+        trigger: new Date(
+          Date.now() + TASK_REMINDER.IMMEDIATE_BUFFER_SECONDS * 1000
+        ),
+        offsetMinutes: 0,
+        isImmediate: true,
+      };
+    }
+
+    return {
+      trigger: new Date(taskDateTime.getTime() - offset * 60 * 1000),
+      offsetMinutes: offset,
+      isImmediate: false,
+    };
+  }
+
+  /**
+   * Returns the task notification type.
+   */
+  getTaskNotificationType(
+    type: keyof typeof TASK_NOTIFICATION_TYPES
+  ): string {
+    return TASK_NOTIFICATION_TYPES[type];
+  }
 
   /**
    * Returns formatted date string.
@@ -289,7 +311,5 @@ getTaskNotificationType(
     return `${this.formatDate(date)} ${this.formatTime(time)}`;
   }
 }
-
-
 
 export default new NotificationHelper();

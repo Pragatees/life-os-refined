@@ -14,11 +14,6 @@ import { getTodayDateString } from "../utils/date";
 export type { Priority };
 export type { Task };
 
-// Backend-owned recurrence enum (Master Task Architecture). Kept here as the
-// single shared source so AddTask/EditTask both import the same type. If
-// your `Task` interface in "../types/task" doesn't yet include a
-// `repeatType: RepeatType` field, add it there too — the backend returns it
-// on every task.
 export type RepeatType = "NEVER" | "DAILY" | "WEEKLY" | "MONTHLY" | "YEARLY";
 
 const API_URL = `${process.env.EXPO_PUBLIC_API_URL}/api`;
@@ -30,8 +25,6 @@ interface TaskState {
   lastFetchedAt: number | null;
   loading: boolean;
   error: string | null;
-  // Tracks which calendar day the current `tasks` snapshot belongs to.
-  // Used to give local storage a "fresh start" every new day (Point 5).
   storedDay: string | null;
 
   fetchTasks: (force?: boolean) => Promise<void>;
@@ -61,6 +54,35 @@ const sortByPriority = (list: Task[]): Task[] => {
 
 const getToken = (): Promise<string | null> => AsyncStorage.getItem("token");
 
+/**
+ * FIX: runs a TaskNotificationService call in its own isolated try/catch,
+ * completely separate from whatever save/network try/catch triggered it.
+ *
+ * Previously, addTask/updateTask/markComplete called
+ * TaskNotificationService.scheduleTask/rescheduleTask/onTaskCompleted
+ * INSIDE the same try block as the API request. If the notification call
+ * threw — e.g. scheduleNotificationAsync failing due to a missing
+ * exact-alarm permission or a cancelByPayload timing race in a release
+ * build — execution jumped to the outer catch, which returned
+ * `{ ok: false, error: "Connection error." }` for a task that had ALREADY
+ * been saved successfully on the server. This made local notification
+ * failures look identical to failed saves, which is very likely part of
+ * why task mutations "sometimes work, sometimes don't" in production.
+ */
+const runNotificationSideEffect = async (
+  label: string,
+  fn: () => Promise<void>
+): Promise<void> => {
+  try {
+    await fn();
+  } catch (notificationError) {
+    console.log(
+      `[TaskStore] Task saved successfully, but ${label} failed:`,
+      notificationError
+    );
+  }
+};
+
 // ─── Store ────────────────────────────────────────────────────────────────────
 
 export const useTaskStore = create<TaskState>()(
@@ -72,14 +94,7 @@ export const useTaskStore = create<TaskState>()(
       error: null,
       storedDay: null,
 
-      // ── resetForNewDayIfNeeded (Point 5) ───────────────────────────────────
-      // If the locally stored snapshot belongs to a previous calendar day,
-      // wipe it so the day starts fresh. The next fetchTasks() call repopulates
-      // from the server as normal — this only guards the *local cache*.
-      //
-      // Recurring tasks are generated entirely by the backend's Master Task
-      // Architecture (a scheduled job on the server), so this just refreshes
-      // the local task list — it does not generate anything itself.
+      // ── resetForNewDayIfNeeded ──────────────────────────────────────────
       resetForNewDayIfNeeded: () => {
         const today = getTodayDateString();
         const { storedDay } = get();
@@ -100,15 +115,12 @@ export const useTaskStore = create<TaskState>()(
 
       // ── fetchTasks ─────────────────────────────────────────────────────────
       fetchTasks: async (force = false) => {
-        // Day boundary check happens before anything else, every call.
         get().resetForNewDayIfNeeded();
 
         const { loading, lastFetchedAt } = get();
 
-        // Prevent concurrent fetches
         if (loading) return;
 
-        // Use cached data if still fresh
         const now = Date.now();
         if (
           !force &&
@@ -119,36 +131,44 @@ export const useTaskStore = create<TaskState>()(
 
         set({ loading: true, error: null });
 
+        let tasks: Task[];
+
         try {
           const token = await getToken();
           const res = await fetch(`${API_URL}/tasks/today`, {
             headers: { Authorization: `Bearer ${token}` },
           });
 
-          if (res.ok) {
-            const data = await res.json();
-            const tasks = sortByPriority(Array.isArray(data) ? data : []);
-
-            set({
-              tasks,
-              lastFetchedAt: Date.now(),
-              loading: false,
-              error: null,
-              storedDay: getTodayDateString(),
-            });
-
-            await TaskNotificationService.syncTasks();
-          } else {
+          if (!res.ok) {
             console.error("[TaskStore] Server error:", res.status);
             set({ loading: false, error: `Server error ${res.status}` });
+            return;
           }
+
+          const data = await res.json();
+          tasks = sortByPriority(Array.isArray(data) ? data : []);
+
+          set({
+            tasks,
+            lastFetchedAt: Date.now(),
+            loading: false,
+            error: null,
+            storedDay: getTodayDateString(),
+          });
         } catch (err) {
           console.error("[TaskStore] Network error:", err);
           set({
             loading: false,
             error: "Connection error. Unable to reach the server.",
           });
+          return;
         }
+
+        // Fetch succeeded and is committed to state — notification sync
+        // failures below must never be reported as a fetch failure.
+        await runNotificationSideEffect("syncing task notifications", () =>
+          TaskNotificationService.syncTasks()
+        );
       },
 
       // ── invalidate ─────────────────────────────────────────────────────────
@@ -158,10 +178,6 @@ export const useTaskStore = create<TaskState>()(
       },
 
       // ── markComplete ───────────────────────────────────────────────────────
-      // NOTE: no manual progress-store call here anymore. Successfully
-      // completing a task updates `lastFetchedAt` (via fetchTasks(true)
-      // below), which the subscription at the bottom of this file picks up
-      // and uses to re-fetch progress from the database automatically.
       markComplete: async (taskId) => {
         get().resetForNewDayIfNeeded();
 
@@ -179,27 +195,28 @@ export const useTaskStore = create<TaskState>()(
             headers: { Authorization: `Bearer ${token}` },
           });
 
-          if (res.ok) {
-            // Recurring tasks (if any) are generated by the backend's
-            // scheduler as part of the Master Task Architecture — completing
-            // a task here never creates the next occurrence on the frontend.
-            // Just refresh so the updated task list reflects server state.
-            // This also updates lastFetchedAt, which triggers the progress
-            // sync subscription below.
-            await get().fetchTasks(true);
-
-            await TaskNotificationService.onTaskCompleted(taskId);
-
-            return { ok: true };
-          } else {
+          if (!res.ok) {
             // Roll back optimistic update
             get().fetchTasks(true);
             return { ok: false, error: `Server error ${res.status}` };
           }
+
+          // Server confirmed completion — refresh so the task list reflects
+          // server state. This also updates lastFetchedAt, which triggers
+          // the progress sync subscription below.
+          await get().fetchTasks(true);
         } catch {
           get().fetchTasks(true);
           return { ok: false, error: "Connection error." };
         }
+
+        // Save is confirmed at this point — a notification failure below
+        // must never be reported as a "mark complete" failure.
+        await runNotificationSideEffect("cancelling task notifications", () =>
+          TaskNotificationService.onTaskCompleted(taskId)
+        );
+
+        return { ok: true };
       },
 
       // ── updateTask ─────────────────────────────────────────────────────────
@@ -217,37 +234,32 @@ export const useTaskStore = create<TaskState>()(
             body: JSON.stringify(payload),
           });
 
-          if (res.ok) {
-            // The backend already keeps recurrence information in sync for
-            // future occurrences as part of the Master Task Architecture —
-            // no local recurrence bookkeeping is needed here.
-            await get().fetchTasks(true);
-
-            const updatedTask = get().tasks.find((t) => t.id === taskId);
-            if (updatedTask) {
-              await TaskNotificationService.rescheduleTask(updatedTask);
-            }
-
-            return { ok: true };
-          } else {
+          if (!res.ok) {
             const err = await res.json().catch(() => null);
             return {
               ok: false,
               error: err?.message ?? `Server error ${res.status}`,
             };
           }
+
+          await get().fetchTasks(true);
         } catch {
           return { ok: false, error: "Connection error." };
         }
+
+        // Update is confirmed and committed — reschedule notifications as a
+        // side effect, isolated from the save's own error reporting.
+        const updatedTask = get().tasks.find((t) => t.id === taskId);
+        if (updatedTask) {
+          await runNotificationSideEffect("rescheduling task notifications", () =>
+            TaskNotificationService.rescheduleTask(updatedTask)
+          );
+        }
+
+        return { ok: true };
       },
 
       // ── addTask ─────────────────────────────────────────────────────────────
-      // Creates a task on the server, then refetches.
-      //
-      // Recurrence (repeatType) is included in the payload by the caller
-      // (AddTaskComponent); the backend's Master Task Architecture is fully
-      // responsible for creating the master task and scheduling all future
-      // occurrences. This function does not need to know anything about it.
       addTask: async (payload) => {
         get().resetForNewDayIfNeeded();
 
@@ -262,34 +274,37 @@ export const useTaskStore = create<TaskState>()(
             body: JSON.stringify(payload),
           });
 
-          if (res.ok) {
-            await get().fetchTasks(true);
-
-            const createdTask = get().tasks.find(
-              (t) =>
-                t.taskName === payload.taskName &&
-                t.taskDate === payload.taskDate &&
-                t.taskTime === payload.taskTime
-            );
-            if (createdTask) {
-              await TaskNotificationService.scheduleTask(createdTask);
-            }
-
-            return { ok: true };
-          } else {
+          if (!res.ok) {
             const err = await res.json().catch(() => null);
             return {
               ok: false,
               error: err?.message ?? `Server error ${res.status}`,
             };
           }
+
+          await get().fetchTasks(true);
         } catch {
           return { ok: false, error: "Connection error." };
         }
+
+        // Task is already created and committed to state at this point —
+        // scheduling its notification is a side effect, isolated below.
+        const createdTask = get().tasks.find(
+          (t) =>
+            t.taskName === payload.taskName &&
+            t.taskDate === payload.taskDate &&
+            t.taskTime === payload.taskTime
+        );
+        if (createdTask) {
+          await runNotificationSideEffect("scheduling task notifications", () =>
+            TaskNotificationService.scheduleTask(createdTask)
+          );
+        }
+
+        return { ok: true };
       },
 
       // ── deleteTask ─────────────────────────────────────────────────────────
-      // Deletes a task from the server, then refetches.
       deleteTask: async (taskId) => {
         get().resetForNewDayIfNeeded();
 
@@ -302,49 +317,42 @@ export const useTaskStore = create<TaskState>()(
             },
           });
 
-          if (res.ok) {
-            // Cancel notification for the deleted task
-            await TaskNotificationService.cancelTask(taskId);
-
-            await get().fetchTasks(true);
-
-            return { ok: true };
-          } else {
+          if (!res.ok) {
             const err = await res.json().catch(() => null);
             return {
               ok: false,
               error: err?.message ?? `Server error ${res.status}`,
             };
           }
+
+          await get().fetchTasks(true);
         } catch {
           return { ok: false, error: "Connection error." };
         }
+
+        // Delete is confirmed server-side — cancel local notifications as a
+        // side effect, isolated from the delete's own error reporting.
+        await runNotificationSideEffect("cancelling task notifications", () =>
+          TaskNotificationService.cancelTask(taskId)
+        );
+
+        return { ok: true };
       },
 
-      // ── onLoginSuccess (Point 1) ────────────────────────────────────────────
-      // Call this from your login screen / auth success handler:
-      //   await useTaskStore.getState().onLoginSuccess(user.name);
+      // ── onLoginSuccess ────────────────────────────────────────────────────
       onLoginSuccess: async (userName) => {
         get().resetForNewDayIfNeeded();
-        // Any recurring tasks due while the user was away are generated by
-        // the backend scheduler automatically — simply pull fresh tasks so
-        // the UI is up to date immediately rather than waiting for the next
-        // screen mount. The progress sync subscription below picks up the
-        // resulting lastFetchedAt change and refreshes progress too.
         await get().fetchTasks(true);
-
-        await TaskNotificationService.syncTasks();
+        // fetchTasks(true) already triggers TaskNotificationService.syncTasks()
+        // internally (see fetchTasks above) — no need to call it again here.
       },
 
       // ── onLogout ─────────────────────────────────────────────────────────────
-      // Call this from your logout button / settings screen, e.g.:
-      //   await useTaskStore.getState().onLogout();
-      //   navigation.replace("Login");
-      //
-      // Clears the auth token and resets in-memory + persisted task state so
-      // the next login starts completely clean.
       onLogout: async () => {
-        await TaskNotificationService.cancelAll();
+        await runNotificationSideEffect(
+          "cancelling task notifications on logout",
+          () => TaskNotificationService.cancelAll()
+        );
 
         try {
           await AsyncStorage.removeItem("token");
@@ -360,24 +368,17 @@ export const useTaskStore = create<TaskState>()(
           storedDay: null,
         });
 
-        // Logout clears/wipes progress rather than re-fetching it, so this
-        // is called explicitly instead of relying on the subscription
-        // below (which only fires on a *populated* lastFetchedAt).
         await useProgressStore.getState().onLogout();
       },
     }),
     {
       name: "task-storage",
       storage: createJSONStorage(() => AsyncStorage),
-      // Only persist data — not transient UI state
       partialize: (state) => ({
         tasks: state.tasks,
         lastFetchedAt: state.lastFetchedAt,
         storedDay: state.storedDay,
       }),
-      // Runs once, right after the persisted state is loaded from disk.
-      // Enforces the "fresh start every new day" rule (Point 5) even before
-      // any fetch happens, e.g. on cold app start.
       onRehydrateStorage: () => (state) => {
         if (!state) return;
         const today = getTodayDateString();
@@ -397,21 +398,11 @@ export const useTaskStore = create<TaskState>()(
 // -----------------------------------------------------------------------------
 // Task ↔ Progress Sync
 // -----------------------------------------------------------------------------
-// Single source of truth for keeping progress.ts in sync with task.ts.
-//
-// Every successful mutation in this file (markComplete, updateTask, addTask,
-// deleteTask, onLoginSuccess, and the automatic day-boundary reset) ends by
-// calling fetchTasks(true), which — on success — sets a new `lastFetchedAt`
-// timestamp. Rather than remembering to manually call
-// `useProgressStore.getState().invalidate()` at the end of every action
-// (easy to forget, easy to duplicate), we subscribe once here: any time
-// `lastFetchedAt` changes to a non-null value, we know the task list was
-// just refreshed from the database, so we tell the progress store to
-// invalidate its cache and re-fetch daily/weekly/monthly progress from the
-// database as well.
-//
-// This guarantees: "if something changes in task.ts, it directly affects
-// progress" — without relying on every call site remembering to do it.
+// Unchanged — no bug found here. Every successful mutation ends by calling
+// fetchTasks(true), which sets a new lastFetchedAt on success; this
+// subscription invalidates ProgressStore whenever that happens, so progress
+// always re-syncs after any task change without every call site needing to
+// remember to do it manually.
 // -----------------------------------------------------------------------------
 
 useTaskStore.subscribe((state, prevState) => {

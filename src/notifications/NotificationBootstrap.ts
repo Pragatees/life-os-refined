@@ -4,6 +4,18 @@
  * ============================================================================
  *
  * Initializes and synchronizes the complete notification system.
+ *
+ * FIX 1 (critical): RoutineNotificationService was never imported,
+ * initialized, or synced here. Morning Motivation, the 5 Engagement
+ * Reminders, Evening Planning, and Daily Summary were never scheduled
+ * unless some other screen called syncRoutines()/refresh() directly.
+ * Bootstrap now owns its full lifecycle, same as every other service.
+ *
+ * FIX 2: synchronize() now guards against re-entrant/concurrent calls.
+ * _layout.tsx's mount effect calls synchronize() once, but various store
+ * actions (fetchTasks, onLoginSuccess, etc.) can also trigger individual
+ * service syncs close together on a cold start — this prevents overlapping
+ * full-system syncs from racing each other.
  * ============================================================================
  */
 
@@ -15,12 +27,16 @@ import GoalNotificationService from "./goal/GoalNotificationService";
 import NoteNotificationService from "./note/NoteNotificationService";
 import AIReviewNotificationService from "./ai/AIReviewNotificationService";
 import AccountNotificationService from "./account/AccountNotificationService";
+import RoutineNotificationService from "./RoutineNotificationService";
 
 import NotificationLogger from "./core/NotificationLogger";
 import { LOGGER_TAG } from "./core/NotificationConstants";
 
 class NotificationBootstrap {
   private initialized = false;
+
+  /** Guards against overlapping synchronize() calls racing each other. */
+  private syncInFlight: Promise<void> | null = null;
 
   /**
    * ===========================================================================
@@ -52,6 +68,7 @@ class NotificationBootstrap {
       await NoteNotificationService.initialize();
       await AIReviewNotificationService.initialize();
       await AccountNotificationService.initialize();
+      await RoutineNotificationService.initialize();
 
       this.initialized = true;
 
@@ -74,6 +91,20 @@ class NotificationBootstrap {
    * ===========================================================================
    */
   async synchronize(): Promise<void> {
+    if (this.syncInFlight) {
+      return this.syncInFlight;
+    }
+
+    this.syncInFlight = this.doSynchronize();
+
+    try {
+      await this.syncInFlight;
+    } finally {
+      this.syncInFlight = null;
+    }
+  }
+
+  private async doSynchronize(): Promise<void> {
     try {
       NotificationLogger.info(
         LOGGER_TAG.MANAGER,
@@ -91,6 +122,10 @@ class NotificationBootstrap {
 
       // AI Review Notifications
       await AIReviewNotificationService.sync();
+
+      // Routine Notifications (Morning Motivation, Engagement Reminders,
+      // Evening Planning, Daily Summary) — previously never wired in.
+      await RoutineNotificationService.syncRoutines();
 
       // Handle notification that launched the app
       await NotificationResponseService.handleInitialNotification();

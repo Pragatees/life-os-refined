@@ -4,6 +4,17 @@
  * ============================================================================
  *
  * Handles Daily, Weekly and Monthly AI Review notifications.
+ *
+ * FIX 1: scheduleDailyReview()/scheduleWeeklyReview()/scheduleMonthlyReview()
+ * used to hardcode `trigger.setHours(21, 15, 0, 0)` directly, while
+ * NotificationConstants.DAILY_SCHEDULE.DAILY_AI_REVIEW existed as a separate,
+ * unused "source of truth" that had drifted to a different value (21:00).
+ * Editing the constant did nothing. All three now read from
+ * DAILY_SCHEDULE.DAILY_AI_REVIEW exclusively.
+ *
+ * FIX 2: added a sync/resync in-flight guard for consistency with the other
+ * services (sync() unconditionally cancels + reschedules all three reviews
+ * on every app launch — harmless but now safe against re-entrant calls).
  * ============================================================================
  */
 
@@ -16,6 +27,9 @@ import { LOGGER_TAG, DAILY_SCHEDULE } from "../core/NotificationConstants";
 
 class AIReviewNotificationService {
   private initialized = false;
+
+  /** Guards against overlapping sync()/resync() calls racing each other. */
+  private syncInFlight: Promise<void> | null = null;
 
   /**
    * ===========================================================================
@@ -41,13 +55,38 @@ class AIReviewNotificationService {
    * ===========================================================================
    */
   async sync(): Promise<void> {
+    return this.runSync();
+  }
+
+  /**
+   * ===========================================================================
+   * Resynchronize AI Review Notifications
+   * ===========================================================================
+   */
+  async resync(): Promise<void> {
+    return this.runSync();
+  }
+
+  private async runSync(): Promise<void> {
+    if (this.syncInFlight) {
+      return this.syncInFlight;
+    }
+
+    this.syncInFlight = this.doSync();
+
+    try {
+      await this.syncInFlight;
+    } finally {
+      this.syncInFlight = null;
+    }
+  }
+
+  private async doSync(): Promise<void> {
     try {
       await this.cancelAll();
 
       await this.scheduleDailyReview();
-
       await this.scheduleWeeklyReview();
-
       await this.scheduleMonthlyReview();
 
       NotificationLogger.info(
@@ -65,42 +104,15 @@ class AIReviewNotificationService {
 
   /**
    * ===========================================================================
-   * Resynchronize AI Review Notifications
-   * ===========================================================================
-   */
-  async resync(): Promise<void> {
-    try {
-      await this.cancelAll();
-
-      await this.scheduleDailyReview();
-
-      await this.scheduleWeeklyReview();
-
-      await this.scheduleMonthlyReview();
-
-      NotificationLogger.info(
-        LOGGER_TAG.AI,
-        "AI Review notifications resynchronized."
-      );
-    } catch (error) {
-      NotificationLogger.error(
-        LOGGER_TAG.AI,
-        "Failed to resynchronize AI Review notifications.",
-        error
-      );
-    }
-  }
-
-  /**
-   * ===========================================================================
-   * Schedule Daily Review (One-time at 9:15 PM)
+   * Schedule Daily Review (One-time at DAILY_SCHEDULE.DAILY_AI_REVIEW)
    * ===========================================================================
    */
   private async scheduleDailyReview(): Promise<void> {
     try {
+      const { hour, minute } = DAILY_SCHEDULE.DAILY_AI_REVIEW;
       const trigger = new Date();
 
-      trigger.setHours(21, 15, 0, 0); // 9:15 PM
+      trigger.setHours(hour, minute, 0, 0);
 
       // If the time has already passed today, schedule for tomorrow
       if (trigger <= new Date()) {
@@ -120,7 +132,12 @@ class AIReviewNotificationService {
         },
       });
 
-      NotificationLogger.debug(LOGGER_TAG.AI, "Daily AI Review scheduled for 9:15 PM.");
+      NotificationLogger.debug(
+        LOGGER_TAG.AI,
+        `Daily AI Review scheduled for ${hour}:${minute
+          .toString()
+          .padStart(2, "0")}.`
+      );
     } catch (error) {
       NotificationLogger.error(
         LOGGER_TAG.AI,
@@ -132,27 +149,25 @@ class AIReviewNotificationService {
 
   /**
    * ===========================================================================
-   * Schedule Weekly Review (One-time at 9:15 PM on Sunday)
+   * Schedule Weekly Review (One-time on Sunday at DAILY_SCHEDULE.DAILY_AI_REVIEW)
    * ===========================================================================
    */
   private async scheduleWeeklyReview(): Promise<void> {
     try {
+      const { hour, minute } = DAILY_SCHEDULE.DAILY_AI_REVIEW;
       const trigger = new Date();
 
-      trigger.setHours(21, 15, 0, 0); // 9:15 PM
+      trigger.setHours(hour, minute, 0, 0);
 
       // Get days until Sunday (0 = Sunday, 1 = Monday, etc.)
       const daysUntilSunday = (7 - trigger.getDay()) % 7;
 
-      // If today is Sunday and it's before 9:15 PM, schedule for today
-      // Otherwise, schedule for next Sunday
       if (trigger.getDay() === 0 && trigger <= new Date()) {
         trigger.setDate(trigger.getDate() + 7);
       } else if (trigger.getDay() !== 0) {
         trigger.setDate(trigger.getDate() + daysUntilSunday);
       }
 
-      // Check if the scheduled time has already passed
       if (trigger <= new Date()) {
         trigger.setDate(trigger.getDate() + 7);
       }
@@ -170,7 +185,12 @@ class AIReviewNotificationService {
         },
       });
 
-      NotificationLogger.debug(LOGGER_TAG.AI, "Weekly AI Review scheduled for Sunday at 9:15 PM.");
+      NotificationLogger.debug(
+        LOGGER_TAG.AI,
+        `Weekly AI Review scheduled for Sunday at ${hour}:${minute
+          .toString()
+          .padStart(2, "0")}.`
+      );
     } catch (error) {
       NotificationLogger.error(
         LOGGER_TAG.AI,
@@ -182,23 +202,24 @@ class AIReviewNotificationService {
 
   /**
    * ===========================================================================
-   * Schedule Monthly Review (One-time at 9:15 PM on last day of month)
+   * Schedule Monthly Review (One-time on last day of month at DAILY_SCHEDULE.DAILY_AI_REVIEW)
    * ===========================================================================
    */
   private async scheduleMonthlyReview(): Promise<void> {
     try {
+      const { hour, minute } = DAILY_SCHEDULE.DAILY_AI_REVIEW;
       const trigger = new Date();
 
       // Set to the last day of the current month
       trigger.setMonth(trigger.getMonth() + 1, 0);
-      
-      trigger.setHours(21, 15, 0, 0); // 9:15 PM
+
+      trigger.setHours(hour, minute, 0, 0);
 
       // If the date has already passed, schedule for next month's last day
       if (trigger <= new Date()) {
         trigger.setMonth(trigger.getMonth() + 1);
         trigger.setDate(0); // Last day of next month
-        trigger.setHours(21, 15, 0, 0);
+        trigger.setHours(hour, minute, 0, 0);
       }
 
       await NotificationScheduler.schedule({
@@ -214,7 +235,12 @@ class AIReviewNotificationService {
         },
       });
 
-      NotificationLogger.debug(LOGGER_TAG.AI, "Monthly AI Review scheduled for last day of month at 9:15 PM.");
+      NotificationLogger.debug(
+        LOGGER_TAG.AI,
+        `Monthly AI Review scheduled for last day of month at ${hour}:${minute
+          .toString()
+          .padStart(2, "0")}.`
+      );
     } catch (error) {
       NotificationLogger.error(
         LOGGER_TAG.AI,

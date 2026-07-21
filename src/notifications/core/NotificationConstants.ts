@@ -103,6 +103,14 @@ export const TASK_REMINDER = {
    * Overdue reminder after task time.
    */
   OVERDUE_AFTER: 15,
+
+  /**
+   * How far in the future an "immediate" reminder is actually scheduled.
+   * Must be large enough to comfortably outlast the cancelByPayload()
+   * lookup that runs before every schedule() call (see NotificationScheduler).
+   * 1 second was too tight on release builds under JS-thread contention.
+   */
+  IMMEDIATE_BUFFER_SECONDS: 5,
 } as const;
 
 // -----------------------------------------------------------------------------
@@ -122,6 +130,11 @@ export const REMINDER_MINUTES = {
 // -----------------------------------------------------------------------------
 // Daily Notification Schedule
 // -----------------------------------------------------------------------------
+//
+// Single source of truth for daily/weekly/monthly AI review timing.
+// AIReviewNotificationService reads exclusively from this table — it must
+// NEVER hardcode hour/minute values internally.
+// -----------------------------------------------------------------------------
 
 export const DAILY_SCHEDULE = {
   MORNING_SUMMARY: {
@@ -136,7 +149,7 @@ export const DAILY_SCHEDULE = {
 
   DAILY_AI_REVIEW: {
     hour: 21,
-    minute: 0,
+    minute: 15,
   },
 } as const;
 
@@ -237,6 +250,13 @@ export const NOTIFICATION_STORAGE_KEYS = {
   INITIALIZED: "notification_initialized",
 
   PERMISSION_STATUS: "notification_permission_status",
+
+  /**
+   * Ring buffer of recent notification-system errors, persisted so they can
+   * be inspected on a real device even though release builds have no
+   * attached debugger. Written by NotificationLogger.error().
+   */
+  ERROR_LOG: "notification_error_log",
 } as const;
 
 // -----------------------------------------------------------------------------

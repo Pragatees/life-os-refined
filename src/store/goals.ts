@@ -46,12 +46,8 @@ export interface UpdateGoalPayload {
 // ================================
 
 interface GoalState {
-  // Full list of the user's goals (backed by GET /api/goals)
   goals: Goal[];
 
-  // Goals scoped to a specific `goalDate` (backed by GET /api/goals/date).
-  // Kept SEPARATE from `goals` on purpose — this is a narrower view and
-  // must never overwrite the full list.
   goalsByDate: Goal[];
   goalsByDateLoading: boolean;
   goalsByDateError: string | null;
@@ -68,16 +64,12 @@ interface GoalState {
 
   fetchGoalById: (goalId: string) => Promise<Goal | null>;
 
-  // Returns goals whose `goalDate` matches `date`. Does NOT touch the
-  // full `goals` list — read `goalsByDate` for the result.
   fetchGoalsByDate: (date: string) => Promise<Goal[]>;
 
-  // CRUD Operations
   createGoal: (payload: CreateGoalPayload) => Promise<Goal | null>;
   updateGoal: (goalId: string, payload: UpdateGoalPayload) => Promise<Goal | null>;
   deleteGoal: (goalId: string) => Promise<boolean>;
 
-  // Logout / cleanup
   onLogout: () => Promise<void>;
 }
 
@@ -111,14 +103,40 @@ const handleApiError = (error: unknown): string => {
   return "An unexpected error occurred";
 };
 
-// Keep a goal-list state in sync after a create/update/delete without
-// forcing a full refetch. Applied to BOTH `goals` and `goalsByDate` so
-// neither view goes stale relative to the other.
 const upsertInList = (list: Goal[], goal: Goal): Goal[] =>
   sortGoals([...list.filter((g) => g.id !== goal.id), goal]);
 
 const removeFromList = (list: Goal[], goalId: string): Goal[] =>
   list.filter((g) => g.id !== goalId);
+
+/**
+ * FIX: runs a GoalNotificationService call in its own isolated try/catch,
+ * completely separate from the save/network try/catch that calls it.
+ *
+ * Previously, createGoal/updateGoal/deleteGoal called
+ * GoalNotificationService.xxx() INSIDE the same try block as the API call
+ * and set(). If the notification call threw (e.g. scheduleNotificationAsync
+ * failing for any of the release-build reasons covered elsewhere — missing
+ * exact-alarm permission, a scheduling race, etc.), execution jumped to the
+ * catch block, which set `error: handleApiError(error)` and returned null —
+ * even though the goal had ALREADY been saved successfully on the server
+ * and committed to local state. The UI would show a failure for an
+ * operation that actually succeeded. This mirrors the exact bug
+ * store/notes.ts already fixed (see its inline comment) — applied here too.
+ */
+const runNotificationSideEffect = async (
+  label: string,
+  fn: () => Promise<void>
+): Promise<void> => {
+  try {
+    await fn();
+  } catch (notificationError) {
+    console.log(
+      `[GoalStore] Goal saved successfully, but ${label} failed:`,
+      notificationError
+    );
+  }
+};
 
 // ================================
 // Store
@@ -189,8 +207,6 @@ export const useGoalStore = create<GoalState>()(
             error: null,
             lastFetchedAt: Date.now(),
           });
-
-          await GoalNotificationService.syncGoals();
         } catch (error) {
           console.error("[GoalStore] Fetch Goals Error:", error);
 
@@ -198,7 +214,15 @@ export const useGoalStore = create<GoalState>()(
             loading: false,
             error: handleApiError(error),
           });
+
+          return;
         }
+
+        // Notification sync happens AFTER the fetch has fully succeeded and
+        // is isolated from the fetch's own error handling.
+        await runNotificationSideEffect("syncing goal notifications", () =>
+          GoalNotificationService.syncGoals()
+        );
       },
 
       // ==========================================
@@ -248,7 +272,6 @@ export const useGoalStore = create<GoalState>()(
 
       // ==========================================
       // Fetch Goals By Date
-      // Scoped view only — writes to `goalsByDate`, never to `goals`.
       // ==========================================
       fetchGoalsByDate: async (
         date: string
@@ -310,6 +333,8 @@ export const useGoalStore = create<GoalState>()(
       ): Promise<Goal | null> => {
         set({ loading: true, error: null });
 
+        let newGoal: Goal;
+
         try {
           const token = await getToken();
 
@@ -330,7 +355,7 @@ export const useGoalStore = create<GoalState>()(
             throw new Error(`Server Error ${response.status}`);
           }
 
-          const newGoal: Goal = await response.json();
+          newGoal = await response.json();
 
           set((state) => ({
             goals: upsertInList(state.goals, newGoal),
@@ -341,10 +366,6 @@ export const useGoalStore = create<GoalState>()(
             loading: false,
             error: null,
           }));
-
-          await GoalNotificationService.scheduleGoal(newGoal);
-
-          return newGoal;
         } catch (error) {
           console.error("[GoalStore] Create Goal Error:", error);
 
@@ -355,6 +376,14 @@ export const useGoalStore = create<GoalState>()(
 
           return null;
         }
+
+        // Save is already committed at this point — a notification failure
+        // below must never surface as a create failure.
+        await runNotificationSideEffect("scheduling reminder", () =>
+          GoalNotificationService.scheduleGoal(newGoal)
+        );
+
+        return newGoal;
       },
 
       // ==========================================
@@ -365,6 +394,8 @@ export const useGoalStore = create<GoalState>()(
         payload: UpdateGoalPayload
       ): Promise<Goal | null> => {
         set({ loading: true, error: null });
+
+        let updatedGoal: Goal;
 
         try {
           const token = await getToken();
@@ -389,7 +420,7 @@ export const useGoalStore = create<GoalState>()(
             throw new Error(`Server Error ${response.status}`);
           }
 
-          const updatedGoal: Goal = await response.json();
+          updatedGoal = await response.json();
 
           set((state) => ({
             goals: upsertInList(state.goals, updatedGoal),
@@ -403,10 +434,6 @@ export const useGoalStore = create<GoalState>()(
             loading: false,
             error: null,
           }));
-
-          await GoalNotificationService.rescheduleGoal(updatedGoal);
-
-          return updatedGoal;
         } catch (error) {
           console.error("[GoalStore] Update Goal Error:", error);
 
@@ -417,6 +444,12 @@ export const useGoalStore = create<GoalState>()(
 
           return null;
         }
+
+        await runNotificationSideEffect("rescheduling reminder", () =>
+          GoalNotificationService.rescheduleGoal(updatedGoal)
+        );
+
+        return updatedGoal;
       },
 
       // ==========================================
@@ -457,10 +490,6 @@ export const useGoalStore = create<GoalState>()(
             loading: false,
             error: null,
           }));
-
-          await GoalNotificationService.onGoalDeleted(goalId);
-
-          return true;
         } catch (error) {
           console.error("[GoalStore] Delete Goal Error:", error);
 
@@ -471,14 +500,22 @@ export const useGoalStore = create<GoalState>()(
 
           return false;
         }
+
+        await runNotificationSideEffect("cancelling reminder", () =>
+          GoalNotificationService.onGoalDeleted(goalId)
+        );
+
+        return true;
       },
 
       // ==========================================
-      // Logout — clears in-memory state AND the
-      // persisted "goal-storage" entry in AsyncStorage
+      // Logout
       // ==========================================
       onLogout: async () => {
-        await GoalNotificationService.cancelAll();
+        await runNotificationSideEffect(
+          "cancelling reminders on logout",
+          () => GoalNotificationService.cancelAll()
+        );
 
         try {
           await AsyncStorage.removeItem("goal-storage");
@@ -509,8 +546,6 @@ export const useGoalStore = create<GoalState>()(
         goals: state.goals,
         selectedGoal: state.selectedGoal,
         lastFetchedAt: state.lastFetchedAt,
-        // goalsByDate is intentionally NOT persisted — it's a transient,
-        // screen-scoped view that should always be refetched fresh.
       }),
     }
   )

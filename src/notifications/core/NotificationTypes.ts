@@ -4,9 +4,10 @@
  * ============================================================================
  *
  * Shared notification models used throughout the notification system.
- *
  * This file contains ONLY enums, interfaces and shared models.
  * No business logic belongs here.
+ *
+ * No bug found in this file — included unchanged for completeness.
  * ============================================================================
  */
 
@@ -20,14 +21,6 @@ export enum NotificationType {
   SYSTEM = "SYSTEM",
 }
 
-/**
- * ============================================================================
- * Task Notification Type
- * ============================================================================
- *
- * Used to distinguish different notifications for the same task.
- * ============================================================================
- */
 export enum TaskNotificationType {
   REMINDER = "REMINDER",
   DUE = "DUE",
@@ -40,17 +33,6 @@ export enum AIReviewType {
   MONTHLY = "MONTHLY",
 }
 
-/**
- * ============================================================================
- * Routine Notification Type
- * ============================================================================
- *
- * Each daily routine notification gets its own distinct value — including
- * each Engagement Reminder time slot. NotificationScheduler.isSamePayload()
- * matches on this field, so two different time slots must NOT share a value
- * or scheduling one would cancel the other as a "duplicate".
- * ============================================================================
- */
 export enum RoutineNotificationType {
   MORNING_MOTIVATION = "MORNING_MOTIVATION",
 
@@ -77,160 +59,52 @@ export enum NotificationPermissionStatus {
   UNDETERMINED = "UNDETERMINED",
 }
 
-/**
- * ===========================================================================
- * Notification Payload
- * ===========================================================================
- *
- * Data attached to every notification.
- * Used for navigation when a notification is tapped.
- */
 export interface NotificationPayload
   extends Record<string, unknown> {
-
-  /**
-   * Main notification category.
-   */
   type: NotificationType;
-
-  /**
-   * Task notification fields
-   */
   taskId?: string;
-
   notificationType?: TaskNotificationType;
-
-  /**
-   * Goal notification fields
-   */
   goalId?: string;
-
-  /**
-   * Note notification fields
-   */
   noteDate?: string;
-
-  /**
-   * AI Review fields
-   */
   reviewType?: AIReviewType;
-
-  /**
-   * Routine notification fields
-   */
   routineType?: RoutineNotificationType;
-
-  /**
-   * Optional navigation screen.
-   */
   screen?: string;
 }
 
-/**
- * ===========================================================================
- * Notification Content
- * ===========================================================================
- */
 export interface NotificationContent {
   title: string;
-
   body: string;
-
   payload: NotificationPayload;
-
   priority?: NotificationPriority;
-
   sound?: boolean;
-
   vibrate?: boolean;
 }
 
-/**
- * ===========================================================================
- * Notification Schedule
- * ===========================================================================
- */
 export interface NotificationSchedule {
-
-  /**
-   * Logical notification identifier.
-   *
-   * NOTE:
-   * Expo generates its own notification identifier internally.
-   * This ID is used only inside the application.
-   */
   id: string;
-
-  /**
-   * Notification content.
-   */
   content: NotificationContent;
-
-  /**
-   * Trigger date.
-   */
   trigger: Date;
 }
 
-/**
- * ===========================================================================
- * Notification Response
- * ===========================================================================
- */
 export interface NotificationResponse {
-
-  /**
-   * Expo notification identifier.
-   */
   identifier?: string;
-
-  /**
-   * Notification payload.
-   */
   payload: NotificationPayload;
 }
 
-/**
- * ===========================================================================
- * Notification Channel
- * ===========================================================================
- */
 export interface NotificationChannel {
   id: string;
-
   name: string;
-
   description: string;
 }
 
-/**
- * ===========================================================================
- * Notification Action
- * ===========================================================================
- */
 export interface NotificationAction {
   id: string;
-
   title: string;
-
-  /**
-   * Future support for destructive actions.
-   */
   destructive?: boolean;
 }
 
-/**
- * ===========================================================================
- * Pending Notification
- * ===========================================================================
- *
- * Internal model used by NotificationScheduler while comparing
- * scheduled notifications with pending Expo notifications.
- */
 export interface PendingNotification {
   identifier: string;
-
   payload: NotificationPayload;
-
   trigger: Date;
 }

@@ -16,16 +16,35 @@
  * ✓ Smart reminder logs
  *
  * Every notification service should use this logger instead of console.log().
+ *
+ * FIX: `enabled = __DEV__` used to gate EVERY level, including error().
+ * That meant every catch-block failure in the notification system was
+ * completely silent in release builds — you had zero visibility into why
+ * something failed. info/warn/debug remain dev-only (they're chatty and
+ * not worth persisting), but error() now always logs to console AND is
+ * persisted to AsyncStorage so it can be inspected on a real device after
+ * the fact, even without an attached debugger.
  * ============================================================================
  */
 
-import { LOGGER_TAG } from "./NotificationConstants";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { LOGGER_TAG, NOTIFICATION_STORAGE_KEYS } from "./NotificationConstants";
+
+const MAX_PERSISTED_ERRORS = 50;
+
+interface PersistedErrorEntry {
+  timestamp: string;
+  tag: string;
+  message: string;
+  error?: string;
+}
 
 class NotificationLogger {
   /**
-   * Enable logs only during development.
+   * Gates chatty (info/warn/debug) logs only. Error logs are NEVER gated —
+   * see class doc comment above.
    */
-  private readonly enabled = __DEV__;
+  private readonly verboseEnabled = __DEV__;
 
   // ===========================================================================
   // Internal Logger
@@ -37,7 +56,9 @@ class NotificationLogger {
     message: string,
     data?: unknown
   ): void {
-    if (!this.enabled) return;
+    // error is handled by its own always-on path (see error() below);
+    // this internal helper only serves the gated verbose levels.
+    if (!this.verboseEnabled) return;
 
     const formatted = `[${tag}] ${message}`;
 
@@ -52,12 +73,6 @@ class NotificationLogger {
         data !== undefined
           ? console.warn(formatted, data)
           : console.warn(formatted);
-        break;
-
-      case "error":
-        data !== undefined
-          ? console.error(formatted, data)
-          : console.error(formatted);
         break;
 
       case "debug":
@@ -85,11 +100,92 @@ class NotificationLogger {
   }
 
   // ===========================================================================
-  // Error
+  // Error (ALWAYS logs, dev or production)
   // ===========================================================================
 
   error(tag: string, message: string, error?: unknown): void {
-    this.log("error", tag, message, error);
+    const formatted = `[${tag}] ${message}`;
+
+    // Always print — this is the whole point of the fix. Release builds
+    // strip console output from the visible Metro/adb logcat stream far
+    // less reliably than people assume, and this at minimum keeps errors
+    // visible via `adb logcat` / Play Console ANR & crash reports pipelines
+    // that read console.error.
+    if (error !== undefined) {
+      console.error(formatted, error);
+    } else {
+      console.error(formatted);
+    }
+
+    // Best-effort persistence so the error survives app restarts and can
+    // be inspected without a debugger attached (e.g. via a hidden
+    // "Debug Log" screen, or exported and emailed to yourself).
+    void this.persistError(tag, message, error);
+  }
+
+  private async persistError(
+    tag: string,
+    message: string,
+    error?: unknown
+  ): Promise<void> {
+    try {
+      const raw = await AsyncStorage.getItem(
+        NOTIFICATION_STORAGE_KEYS.ERROR_LOG
+      );
+
+      const existing: PersistedErrorEntry[] = raw ? JSON.parse(raw) : [];
+
+      const entry: PersistedErrorEntry = {
+        timestamp: new Date().toISOString(),
+        tag,
+        message,
+        error: error instanceof Error ? error.message : this.safeStringify(error),
+      };
+
+      const updated = [entry, ...existing].slice(0, MAX_PERSISTED_ERRORS);
+
+      await AsyncStorage.setItem(
+        NOTIFICATION_STORAGE_KEYS.ERROR_LOG,
+        JSON.stringify(updated)
+      );
+    } catch {
+      // If persistence itself fails, there's nothing more we can safely do
+      // here — deliberately not calling this.error() again to avoid
+      // infinite recursion.
+    }
+  }
+
+  private safeStringify(value: unknown): string | undefined {
+    if (value === undefined) return undefined;
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  /**
+   * Reads back the persisted error ring buffer. Useful for a hidden
+   * "Debug Log" settings screen so you can see what failed on a real
+   * device without adb/logcat access.
+   */
+  async getPersistedErrors(): Promise<PersistedErrorEntry[]> {
+    try {
+      const raw = await AsyncStorage.getItem(
+        NOTIFICATION_STORAGE_KEYS.ERROR_LOG
+      );
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  async clearPersistedErrors(): Promise<void> {
+    try {
+      await AsyncStorage.removeItem(NOTIFICATION_STORAGE_KEYS.ERROR_LOG);
+    } catch {
+      // ignore
+    }
   }
 
   // ===========================================================================

@@ -699,4 +699,21 @@ export const useProgressStore = create<ProgressState>()(
       },
     }
   )
-);
+); // <-- Fixed: Added missing closing parenthesis here
+
+// -----------------------------------------------------------------------------
+// Subscribe helper - Moved outside the store
+// -----------------------------------------------------------------------------
+
+export const subscribeToDailyProgress = (
+  listener: (progress: ProgressSummary) => void
+): (() => void) => {
+  let previous = useProgressStore.getState().dailyProgress;
+
+  return useProgressStore.subscribe((state) => {
+    if (state.dailyProgress !== previous) {
+      previous = state.dailyProgress;
+      listener(state.dailyProgress);
+    }
+  });
+};

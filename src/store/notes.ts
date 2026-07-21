@@ -176,20 +176,13 @@ export const useNotesStore = create<NotesState>()(
             : [...state.noteDates, date],
         }));
 
-        // ── FIX: NoteNotificationService doesn't manage per-note
-        // notifications — it manages ONE daily 9:30 PM "write today's
-        // journal" reminder, whose title/body just reflects whether
-        // today's note exists. It only exposes onNoteCreated(),
-        // onNoteUpdated(), onNoteDeleted(), and cancelTodayReminder() —
-        // there is no scheduleNote()/rescheduleNote()/cancelAll(). Calling
-        // those (as this file previously did) always threw
-        // "TypeError: undefined is not a function", AFTER the DB write
-        // had already succeeded, which is why saves looked like they
-        // failed even though the data was saved correctly.
-        //
-        // This is local-device housekeeping, not part of "did the save
-        // succeed" — so it's still wrapped in try/catch, guarded with a
-        // typeof check, so it can never be mistaken for a failed save. ──
+        // ── NoteNotificationService only manages ONE daily 9:30 PM
+        // "write today's journal" reminder, whose title/body just reflects
+        // whether today's note exists. This is local-device housekeeping,
+        // not part of "did the save succeed" — so it's wrapped in its own
+        // try/catch, guarded with a typeof check, so it can never be
+        // mistaken for a failed save. This is the correct pattern —
+        // store/goals.ts and store/task.ts have been updated to match it. ──
         try {
           if (isNewNote) {
             if (typeof NoteNotificationService?.onNoteCreated === "function") {
@@ -222,8 +215,6 @@ export const useNotesStore = create<NotesState>()(
 
       clearNote: async (date) => {
         try {
-          // onNoteDeleted() takes no arguments — it just refreshes
-          // today's single reminder based on current note state.
           if (typeof NoteNotificationService?.onNoteDeleted === "function") {
             await NoteNotificationService.onNoteDeleted();
           } else {
@@ -250,9 +241,6 @@ export const useNotesStore = create<NotesState>()(
       },
 
       clearAll: async () => {
-        // There's only ever one active reminder (today's), so clearing
-        // every note just means refreshing it once afterward — not once
-        // per date.
         try {
           if (typeof NoteNotificationService?.onNoteDeleted === "function") {
             await NoteNotificationService.onNoteDeleted();
@@ -277,9 +265,6 @@ export const useNotesStore = create<NotesState>()(
       // persisted "notes-cache-storage" entry in AsyncStorage
       // ==========================================
       onLogout: async () => {
-        // There's only ever one active reminder (today's) — cancel it
-        // directly rather than iterating per note (cancelAll(noteArray)
-        // doesn't exist on the real service).
         try {
           if (typeof NoteNotificationService?.cancelTodayReminder === "function") {
             await NoteNotificationService.cancelTodayReminder();
