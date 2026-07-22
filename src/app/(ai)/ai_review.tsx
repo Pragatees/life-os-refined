@@ -12,6 +12,9 @@ import {
   StatusBar,
   Platform,
   ActivityIndicator,
+  ScrollView,
+  NativeSyntheticEvent,
+  NativeScrollEvent,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -236,19 +239,41 @@ export const pendingHighPriority = (tasks: Task[]) =>
     .map((t) => taskLabel(t));
 
 // ── Prompt builder ─────────────────────────────────────────────────────
+// NOTE: Only the wording/richness of these instructions was changed here.
+// The output contract (8 numbered sections, plain text, no markdown
+// asterisks) is UNCHANGED so ReviewOutput's parser keeps working exactly
+// as before.
 const SYSTEM_RULES = `
-You are the Life-OS AI Review coach: a personal productivity coach.
-Analyze, evaluate, encourage, and guide — never simply summarize data.
+You are the Life-OS AI Review Coach — an experienced personal productivity
+coach who has reviewed thousands of task logs. You are perceptive, specific,
+and warm. You notice patterns a busy person would miss in their own data,
+and you explain *why* something matters, not just *what* happened.
 
-Rules you must always follow:
-- Never hallucinate, invent tasks, or invent goals.
-- Never exaggerate or fabricate statistics.
-- Never give medical or financial advice.
-- Only use the data provided in the JSON payload below. Do not assume data you were not given.
-- Tone: professional, friendly, supportive, motivational, honest. Never rude, insulting, or overly critical.
-- Always end with positive encouragement and one small, achievable goal.
+Write like a coach who actually read the data, not like a template filling
+in blanks. Reference concrete details from the JSON payload (task names,
+counts, dates, priorities) wherever they strengthen a point — vague,
+generic filler ("you did some tasks") is not acceptable when specific
+numbers or task titles are available in the payload.
 
-Respond in this exact structure, using plain text with numbered section headers (no markdown asterisks):
+Hard rules you must always follow:
+- Never hallucinate, invent tasks, goals, or numbers that are not present in the JSON payload.
+- Never exaggerate, round misleadingly, or fabricate statistics.
+- Never give medical, financial, or legal advice.
+- Only use the data provided in the JSON payload below. If something isn't in the data, say so plainly instead of guessing.
+- If the payload is sparse or empty for a section, say that honestly and briefly rather than padding with generic advice.
+- Tone: professional, friendly, supportive, motivational, honest — like a good coach, not a cheerleader and not a critic. Never rude, dismissive, or overly harsh.
+- Always end with genuine, specific encouragement and exactly one small, concrete, achievable goal the person can act on immediately.
+
+Writing quality bar for every section:
+- Be specific, not generic. Cite an actual task name, count, or date from the payload when it supports the point.
+- Vary sentence length — avoid a wall of same-shaped sentences.
+- No filler openers like "In this section..." or "Based on the data provided...". Get straight to the substance.
+- No markdown symbols anywhere (no asterisks, no bullets like "-" or "•", no bold/italics). Plain sentences only.
+- Each section should feel complete on its own — a person should be able to read just section 3 and understand their strengths without needing the others.
+
+Respond in exactly this structure, using plain text with numbered section
+headers (no markdown asterisks), and nothing before section 1 or after
+section 8:
 1. Overall Productivity Score
 2. Review Summary
 3. Strengths
@@ -258,7 +283,15 @@ Respond in this exact structure, using plain text with numbered section headers 
 7. Focus For Next Period
 8. Motivational Message
 
-Keep it concise — a few sentences per section.
+Length guidance per section (keep it tight, not padded):
+1. One line: a score out of 100 plus a one-sentence justification tied to the data.
+2. Two to three sentences summarizing what actually happened this period.
+3. Two to three sentences, naming specific completed tasks or habits where possible.
+4. Two to three sentences, naming specific missed or pending high-priority tasks where the data supports it — framed constructively, never as a personal failing.
+5. One to two sentences on a real recurring pattern visible in the data (e.g. a particular day, task type, or priority level trending a certain way). If no clear pattern exists in the data, say so.
+6. Two to three concrete, actionable suggestions directly tied to the weaknesses or patterns above — not generic productivity tips.
+7. One to two sentences naming a clear, narrow focus area for the next period.
+8. Two to three sentences of genuine encouragement, closing with exactly one small, specific, achievable goal.
 `.trim();
 
 export function buildPrompt(
@@ -345,6 +378,16 @@ export function StatBox({
 // ── Sidebar sizing helper (mirrors app/(dashboard)/index.tsx) ───────────
 const getSidebarWidth = () => Math.min(300, Dimensions.get("window").width * 0.8);
 
+// ── Tab order — must match the TABS array below, used to translate a
+//    swipe's scroll offset into a tab id and vice-versa. ─────────────────
+const TAB_ORDER: ReviewType[] = ["day", "week", "month"];
+
+// The horizontal padding applied to `root`/`styles.root`. The swipeable
+// content area temporarily cancels this (via negative margin) so each
+// page can be exactly one screen-width wide for correct paging math, then
+// re-applies the same padding inside each page.
+const ROOT_HORIZONTAL_PADDING = 16;
+
 // ── Main Parent Component ───────────────────────────────────────────────
 export default function AIReviewScreen() {
   const [theme, setTheme] = useState<Theme>("dark");
@@ -364,6 +407,16 @@ export default function AIReviewScreen() {
 
   const translateX = useRef(new Animated.Value(-getSidebarWidth())).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
+
+  // ── Swipeable tab content state ───────────────────────────────────────
+  const [screenWidth, setScreenWidth] = useState(Dimensions.get("window").width);
+  // Which review screens have ever been shown — once a tab is visited it
+  // stays mounted so swiping back to it doesn't remount / re-fetch, but we
+  // avoid mounting all three (and firing all their data loads) up front.
+  const [visitedTabs, setVisitedTabs] = useState<Set<ReviewType>>(
+    () => new Set<ReviewType>(["day"])
+  );
+  const contentScrollRef = useRef<ScrollView>(null);
 
   const C = colorsForTheme(theme);
 
@@ -418,12 +471,13 @@ export default function AIReviewScreen() {
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
 
-  // ── Keep sidebar width in sync with orientation / window changes ──────
+  // ── Keep sidebar width + screen width in sync with orientation changes ─
   useEffect(() => {
-    const subscription = Dimensions.addEventListener("change", () => {
+    const subscription = Dimensions.addEventListener("change", ({ window }) => {
       const w = getSidebarWidth();
       setSidebarWidth(w);
       if (!sidebarOpen) translateX.setValue(-w);
+      setScreenWidth(window.width);
     });
     return () => subscription.remove();
   }, [sidebarOpen]);
@@ -461,6 +515,48 @@ export default function AIReviewScreen() {
       });
     }
   }, [sidebarOpen, sidebarWidth]);
+
+  // ── Keep the swipeable content area aligned to the active tab whenever
+  //    the screen width changes (e.g. device rotation). ───────────────────
+  useEffect(() => {
+    const idx = TAB_ORDER.indexOf(activeTab);
+    if (idx < 0) return;
+    contentScrollRef.current?.scrollTo({ x: idx * screenWidth, animated: false });
+    // Only re-run when the width itself changes — activeTab changes are
+    // already handled by handleTabPress / handleContentScrollEnd below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenWidth]);
+
+  const markVisited = useCallback((tab: ReviewType) => {
+    setVisitedTabs((prev) => (prev.has(tab) ? prev : new Set(prev).add(tab)));
+  }, []);
+
+  // Tapping a tab button: scroll the paging view to that page and mark it
+  // visited so it (re)mounts if this is the first time it's shown.
+  const handleTabPress = useCallback(
+    (tab: ReviewType) => {
+      const idx = TAB_ORDER.indexOf(tab);
+      if (idx < 0) return;
+      markVisited(tab);
+      setActiveTab(tab);
+      contentScrollRef.current?.scrollTo({ x: idx * screenWidth, animated: true });
+    },
+    [markVisited, screenWidth]
+  );
+
+  // Swiping the content: figure out which page we landed on and sync the
+  // active tab + segmented control to match.
+  const handleContentScrollSettled = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (screenWidth <= 0) return;
+      const idx = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
+      const tab = TAB_ORDER[idx];
+      if (!tab) return;
+      markVisited(tab);
+      setActiveTab((current) => (current === tab ? current : tab));
+    },
+    [screenWidth, markVisited]
+  );
 
   const TABS: { id: ReviewType; label: string; icon: keyof typeof Ionicons.glyphMap }[] = [
     { id: "day", label: "Day", icon: "today-outline" },
@@ -573,7 +669,7 @@ export default function AIReviewScreen() {
               key={tab.id}
               style={sharedStyles.segmentItem}
               activeOpacity={0.8}
-              onPress={() => setActiveTab(tab.id)}
+              onPress={() => handleTabPress(tab.id)}
             >
               {active ? (
                 <LinearGradient
@@ -598,11 +694,33 @@ export default function AIReviewScreen() {
         })}
       </View>
 
-      {/* ── Active child screen (theme + userId passed down so it always
-           stays in sync and resets cleanly across logout/login) ── */}
-      {activeTab === "day" && <DayReview theme={theme} userId={reviewUserId} />}
-      {activeTab === "week" && <WeekReview theme={theme} userId={reviewUserId} />}
-      {activeTab === "month" && <MonthReview theme={theme} userId={reviewUserId} />}
+      {/* ── Swipeable content (day / week / month) — also reachable via the
+           segmented tabs above. Pages beyond the ones already visited are
+           rendered as empty spacers so paging math stays correct without
+           mounting (and data-loading) screens the user hasn't opened yet. ── */}
+      <ScrollView
+        ref={contentScrollRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onMomentumScrollEnd={handleContentScrollSettled}
+        onScrollEndDrag={handleContentScrollSettled}
+        style={[
+          styles.contentScroll,
+          { width: screenWidth, marginHorizontal: -ROOT_HORIZONTAL_PADDING },
+        ]}
+      >
+        <View style={[styles.contentPage, { width: screenWidth }]}>
+          {visitedTabs.has("day") && <DayReview theme={theme} userId={reviewUserId} />}
+        </View>
+        <View style={[styles.contentPage, { width: screenWidth }]}>
+          {visitedTabs.has("week") && <WeekReview theme={theme} userId={reviewUserId} />}
+        </View>
+        <View style={[styles.contentPage, { width: screenWidth }]}>
+          {visitedTabs.has("month") && <MonthReview theme={theme} userId={reviewUserId} />}
+        </View>
+      </ScrollView>
 
       {/* ── Sidebar overlay (mirrors app/(dashboard)/index.tsx) ── */}
       {sidebarMounted && (
@@ -647,7 +765,7 @@ export default function AIReviewScreen() {
 const styles = StyleSheet.create({
   root: {
     flex: 1,
-    paddingHorizontal: 16,
+    paddingHorizontal: ROOT_HORIZONTAL_PADDING,
   },
 
   loadingContainer: {
@@ -727,6 +845,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
+  },
+
+  contentScroll: {
+    flex: 1,
+  },
+
+  contentPage: {
+    flex: 1,
+    paddingHorizontal: ROOT_HORIZONTAL_PADDING,
   },
 });
 

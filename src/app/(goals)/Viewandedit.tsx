@@ -76,6 +76,7 @@ type ModalMode = "loading" | "edit";
 type DisplayStatus = "completed" | "ongoing" | "upcoming" | "cancelled";
 
 // Map your GoalStatus to display status
+// FIX: STARTED and IN_PROGRESS both map to "ongoing"
 const mapStatusToDisplay = (status: GoalStatus): DisplayStatus => {
   if (status === "COMPLETED") return "completed";
   if (status === "CANCELLED") return "cancelled";

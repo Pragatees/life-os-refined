@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
+  PanResponder,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
@@ -21,9 +22,6 @@ import Viewandedit from "./Viewandedit";
 import Sidebar from "../(tabs)/sidebar";
 
 // ─── Theme Tokens (same palette as Dashboard — keep in sync) ──────────────
-// NOTE: Ideally move this DARK/BRIGHT object into a shared file (e.g.
-// `theme/tokens.ts`) and import it in both Dashboard and GoalScreen so the
-// two never drift apart. Duplicated here so this file works standalone.
 const DARK = {
   bg: "#0A0A0B",
   surface: "#18181B",
@@ -72,6 +70,7 @@ const TABS: {
 ];
 
 const getSidebarWidth = () => Math.min(300, Dimensions.get("window").width * 0.8);
+const getScreenWidth = () => Dimensions.get("window").width;
 
 export default function GoalScreen() {
   const [theme, setTheme] = useState<Theme>("dark");
@@ -88,6 +87,9 @@ export default function GoalScreen() {
   const [sidebarMounted, setSidebarMounted] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(getSidebarWidth());
 
+  // ── Screen width (for slide math) ──────────────────────────────────────────
+  const [screenWidth, setScreenWidth] = useState(getScreenWidth());
+
   // ── Sidebar slide + backdrop animation values ─────────────────────────────
   const translateX = useRef(new Animated.Value(-getSidebarWidth())).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
@@ -96,12 +98,22 @@ export default function GoalScreen() {
   const headerFade = useRef(new Animated.Value(0)).current;
   const headerSlide = useRef(new Animated.Value(-8)).current;
 
-  // ── Keep sidebar width in sync with orientation / window changes ──────────
+  // ── Tab slide animation ─────────────────────────────────────────────────────
+  const activeIndexRef = useRef(TABS.findIndex((t) => t.id === activeTab));
+  const contentTranslateX = useRef(
+    new Animated.Value(-activeIndexRef.current * getScreenWidth())
+  ).current;
+
+  // ── Keep sidebar width + screen width in sync with orientation / window changes ──
   useEffect(() => {
     const subscription = Dimensions.addEventListener("change", () => {
       const w = getSidebarWidth();
       setSidebarWidth(w);
       if (!sidebarOpen) translateX.setValue(-w);
+
+      const sw = getScreenWidth();
+      setScreenWidth(sw);
+      contentTranslateX.setValue(-activeIndexRef.current * sw);
     });
     return () => subscription.remove();
   }, [sidebarOpen]);
@@ -132,7 +144,7 @@ export default function GoalScreen() {
     }
   }, [themeLoaded, headerFade, headerSlide]);
 
-  // ── Drive the slide animation purely from sidebarOpen ─────────────────────
+  // ── Drive the sidebar slide animation purely from sidebarOpen ─────────────
   useEffect(() => {
     if (sidebarOpen) {
       setSidebarMounted(true);
@@ -187,6 +199,70 @@ export default function GoalScreen() {
 
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
+  // ── Animate to a given tab index, update state + ref ──────────────────────
+  const goToIndex = useCallback(
+    (index: number) => {
+      const clamped = Math.max(0, Math.min(TABS.length - 1, index));
+      activeIndexRef.current = clamped;
+      setActiveTab(TABS[clamped].id);
+      Animated.spring(contentTranslateX, {
+        toValue: -clamped * screenWidth,
+        useNativeDriver: true,
+        friction: 10,
+        tension: 60,
+      }).start();
+    },
+    [screenWidth, contentTranslateX]
+  );
+
+  const handleTabPress = useCallback(
+    (tabId: GoalTab) => {
+      const index = TABS.findIndex((t) => t.id === tabId);
+      goToIndex(index);
+    },
+    [goToIndex]
+  );
+
+  // ── Swipe gesture for the content area ─────────────────────────────────────
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState) => {
+        return (
+          Math.abs(gestureState.dx) > 12 &&
+          Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5
+        );
+      },
+      onPanResponderMove: (_evt, gestureState) => {
+        const base = -activeIndexRef.current * screenWidth;
+        let next = base + gestureState.dx;
+
+        // Add resistance at the edges (first/last tab)
+        const min = -(TABS.length - 1) * screenWidth;
+        const max = 0;
+        if (next > max) next = max + (next - max) * 0.3;
+        if (next < min) next = min + (next - min) * 0.3;
+
+        contentTranslateX.setValue(next);
+      },
+      onPanResponderRelease: (_evt, gestureState) => {
+        const threshold = screenWidth * 0.22;
+        let targetIndex = activeIndexRef.current;
+
+        if (gestureState.dx < -threshold) {
+          targetIndex = activeIndexRef.current + 1;
+        } else if (gestureState.dx > threshold) {
+          targetIndex = activeIndexRef.current - 1;
+        }
+
+        goToIndex(targetIndex);
+      },
+      onPanResponderTerminate: () => {
+        goToIndex(activeIndexRef.current);
+      },
+    })
+  ).current;
 
   const C = theme === "bright" ? BRIGHT : DARK;
 
@@ -261,24 +337,43 @@ export default function GoalScreen() {
         </TouchableOpacity>
       </Animated.View>
 
-      {/* ── Content ── */}
-      <View style={styles.content}>
-        {activeTab === "add" && (
-          <Addandedit
-            selectedDate={selectedDate}
-            onDateChange={handleDateChange}
-            onRefresh={refreshGoals}
-            theme={theme}
-          />
-        )}
-        {activeTab === "view" && (
-          <Viewandedit
-            selectedDate={selectedDate}
-            refreshKey={refreshKey}
-            onRefresh={refreshGoals}
-            theme={theme}
-          />
-        )}
+      {/* ── Content (swipeable, slides between tabs) ── */}
+      <View style={styles.content} {...panResponder.panHandlers}>
+        <Animated.View
+          style={[
+            styles.slideRow,
+            {
+              width: screenWidth * TABS.length,
+              transform: [{ translateX: contentTranslateX }],
+            },
+          ]}
+        >
+          {/* Each pane is exactly `screenWidth` wide so it lines up with the
+              translateX step size. Padding lives on the INNER wrapper, not
+              on the pane itself — otherwise the row's total width no longer
+              matches screenWidth * TABS.length and every tab past the first
+              drifts out of alignment. */}
+          <View style={[styles.slidePane, { width: screenWidth }]}>
+            <View style={styles.slidePaneInner}>
+              <Addandedit
+                selectedDate={selectedDate}
+                onDateChange={handleDateChange}
+                onRefresh={refreshGoals}
+                theme={theme}
+              />
+            </View>
+          </View>
+          <View style={[styles.slidePane, { width: screenWidth }]}>
+            <View style={styles.slidePaneInner}>
+              <Viewandedit
+                selectedDate={selectedDate}
+                refreshKey={refreshKey}
+                onRefresh={refreshGoals}
+                theme={theme}
+              />
+            </View>
+          </View>
+        </Animated.View>
       </View>
 
       {/* ── Floating Bottom Tab Bar ── */}
@@ -295,7 +390,7 @@ export default function GoalScreen() {
               <TouchableOpacity
                 key={tab.id}
                 style={styles.tabItem}
-                onPress={() => setActiveTab(tab.id)}
+                onPress={() => handleTabPress(tab.id)}
                 activeOpacity={0.8}
               >
                 {active ? (
@@ -389,21 +484,21 @@ const styles = StyleSheet.create({
   },
 
   headerCard: {
-  flexDirection: "row",
-  alignItems: "center",
-  justifyContent: "space-between",
-  marginHorizontal: 16,
-  marginTop: 48,
-  marginBottom: 8,
-  paddingHorizontal: 16,
-  paddingVertical: 14,
-  borderRadius: 24,
-  borderWidth: 1,
-  shadowOffset: { width: 0, height: 10 },
-  shadowOpacity: 0.18,
-  shadowRadius: 20,
-  elevation: 16,
-},
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginHorizontal: 16,
+    marginTop: 48,
+    marginBottom: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    borderRadius: 24,
+    borderWidth: 1,
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.18,
+    shadowRadius: 20,
+    elevation: 16,
+  },
 
   headerCenter: {
     alignItems: "center",
@@ -450,6 +545,21 @@ const styles = StyleSheet.create({
   },
 
   content: {
+    flex: 1,
+    overflow: "hidden",
+  },
+
+  slideRow: {
+    flex: 1,
+    flexDirection: "row",
+  },
+
+  slidePane: {
+    // width is set inline to `screenWidth` — must stay unpadded so the
+    // row's total width exactly equals screenWidth * TABS.length.
+  },
+
+  slidePaneInner: {
     flex: 1,
     paddingHorizontal: 16,
   },

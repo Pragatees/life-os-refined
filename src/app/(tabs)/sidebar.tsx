@@ -80,7 +80,7 @@ const MENU_ITEMS: {
   { label: "Goals", path: "/GoalScreen", icon: "briefcase-outline" },
   { label: "Progress", path: "/HistoryScreen", icon: "bar-chart-outline" },
   { label: "AI Review", path: "/ai_review", icon: "logo-android" },
-  { label: "Notifications", path: "/Notification/Notificationhistoryscreen", icon: "notifications-outline" },
+  { label: "Notifications", path: "/(Notification)/Notificationhistoryscreen", icon: "notifications-outline" },
   { label: "Profile", path: "/profile", icon: "person-outline" },
   { label: "Account Settings", path: "/settings", icon: "settings-outline" }
 ];

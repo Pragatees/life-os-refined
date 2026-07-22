@@ -14,6 +14,7 @@ import {
   Dimensions,
   StatusBar,
   Platform,
+  PanResponder,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
@@ -30,12 +31,6 @@ type TabType = "DAY" | "WEEK" | "MONTH";
 type Theme = "dark" | "bright";
 
 interface HistoryScreenProps {
-  // Both are optional and UNCONTROLLED by default: when this screen is
-  // reached via router.push("/HistoryScreen") (as it is from the Sidebar
-  // menu), no props are passed at all, so this component loads and owns
-  // its own theme from AsyncStorage — the same source of truth GoalScreen
-  // reads/writes to. If a parent ever DOES pass `theme` explicitly, that
-  // takes over as a controlled value (see the sync effect below).
   theme?: Theme;
   onThemeChange?: (theme: Theme) => void;
 }
@@ -90,12 +85,10 @@ const TABS: { id: TabType; label: string; icon: keyof typeof Ionicons.glyphMap }
 ];
 
 const getSidebarWidth = () => Math.min(300, Dimensions.get("window").width * 0.8);
+const getScreenWidth = () => Dimensions.get("window").width;
 
 export default function HistoryScreen({ theme: themeProp, onThemeChange }: HistoryScreenProps) {
   // ── Theme state ────────────────────────────────────────────────────────
-  // Seed synchronously with whatever we have (an explicit prop, or "dark")
-  // so there's no undefined flash, then correct it from AsyncStorage right
-  // after mount — same pattern as GoalScreen.
   const [internalTheme, setInternalTheme] = useState<Theme>(themeProp ?? "dark");
   const [themeLoaded, setThemeLoaded] = useState(false);
   const [headerAnimationComplete, setHeaderAnimationComplete] = useState(false);
@@ -104,10 +97,6 @@ export default function HistoryScreen({ theme: themeProp, onThemeChange }: Histo
   const headerFade = useRef(new Animated.Value(0)).current;
   const headerSlide = useRef(new Animated.Value(-8)).current;
 
-  // ── Load persisted theme on mount (uncontrolled/default path) ────────────
-  // This is what was missing before: when this screen is opened via routing
-  // (no props passed at all), it used to silently default to "dark" and
-  // ignore anything saved by GoalScreen/Sidebar. Now it checks storage too.
   useEffect(() => {
     let cancelled = false;
     const loadTheme = async () => {
@@ -128,11 +117,6 @@ export default function HistoryScreen({ theme: themeProp, onThemeChange }: Histo
     };
   }, []);
 
-  // ── Controlled override ───────────────────────────────────────────────
-  // If (and only if) a parent explicitly passes `theme`, treat this as a
-  // controlled component and let that value win over whatever storage said.
-  // In the common case (routed screen, no props) themeProp is undefined,
-  // so this never fires and the AsyncStorage-loaded value stands.
   useEffect(() => {
     if (themeProp !== undefined) {
       setInternalTheme(themeProp);
@@ -170,11 +154,24 @@ export default function HistoryScreen({ theme: themeProp, onThemeChange }: Histo
   const translateX = useRef(new Animated.Value(-getSidebarWidth())).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
 
+  // ── Screen width (for slide math) ──────────────────────────────────────────
+  const [screenWidth, setScreenWidth] = useState(getScreenWidth());
+
+  // ── Tab slide animation ─────────────────────────────────────────────────────
+  const activeIndexRef = useRef(TABS.findIndex((t) => t.id === selectedTab));
+  const contentTranslateX = useRef(
+    new Animated.Value(-activeIndexRef.current * getScreenWidth())
+  ).current;
+
   useEffect(() => {
     const subscription = Dimensions.addEventListener("change", () => {
       const w = getSidebarWidth();
       setSidebarWidth(w);
       if (!sidebarOpen) translateX.setValue(-w);
+
+      const sw = getScreenWidth();
+      setScreenWidth(sw);
+      contentTranslateX.setValue(-activeIndexRef.current * sw);
     });
     return () => subscription.remove();
   }, [sidebarOpen]);
@@ -247,7 +244,70 @@ export default function HistoryScreen({ theme: themeProp, onThemeChange }: Histo
     await refresh();
   }, [refresh]);
 
-  const changeTab = (tab: TabType) => setSelectedTab(tab);
+  // ── Animate to a given tab index, update state + ref ──────────────────────
+  const goToIndex = useCallback(
+    (index: number) => {
+      const clamped = Math.max(0, Math.min(TABS.length - 1, index));
+      activeIndexRef.current = clamped;
+      setSelectedTab(TABS[clamped].id);
+      Animated.spring(contentTranslateX, {
+        toValue: -clamped * screenWidth,
+        useNativeDriver: true,
+        friction: 10,
+        tension: 60,
+      }).start();
+    },
+    [screenWidth, contentTranslateX]
+  );
+
+  const changeTab = useCallback(
+    (tab: TabType) => {
+      const index = TABS.findIndex((t) => t.id === tab);
+      goToIndex(index);
+    },
+    [goToIndex]
+  );
+
+  // ── Swipe gesture for the content area ─────────────────────────────────────
+  // Only claims the gesture on a clearly horizontal drag, so the vertical
+  // ScrollViews (and their pull-to-refresh) inside each pane keep working.
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState) => {
+        return (
+          Math.abs(gestureState.dx) > 12 &&
+          Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5
+        );
+      },
+      onPanResponderMove: (_evt, gestureState) => {
+        const base = -activeIndexRef.current * screenWidth;
+        let next = base + gestureState.dx;
+
+        const min = -(TABS.length - 1) * screenWidth;
+        const max = 0;
+        if (next > max) next = max + (next - max) * 0.3;
+        if (next < min) next = min + (next - min) * 0.3;
+
+        contentTranslateX.setValue(next);
+      },
+      onPanResponderRelease: (_evt, gestureState) => {
+        const threshold = screenWidth * 0.22;
+        let targetIndex = activeIndexRef.current;
+
+        if (gestureState.dx < -threshold) {
+          targetIndex = activeIndexRef.current + 1;
+        } else if (gestureState.dx > threshold) {
+          targetIndex = activeIndexRef.current - 1;
+        }
+
+        goToIndex(targetIndex);
+      },
+      onPanResponderTerminate: () => {
+        goToIndex(activeIndexRef.current);
+      },
+    })
+  ).current;
 
   // ── Avoid a flash of the wrong theme while AsyncStorage resolves ────────
   if (!themeLoaded) {
@@ -404,42 +464,84 @@ export default function HistoryScreen({ theme: themeProp, onThemeChange }: Histo
         </View>
       )}
 
-      {/* ── Content ── */}
+      {/* ── Content (swipeable, slides between tabs) ── */}
       {!loading && !error && (
-        <ScrollView
-          refreshControl={
-            <RefreshControl
-              refreshing={refreshing}
-              onRefresh={onRefresh}
-              tintColor={C.accent}
-              colors={[C.accent]}
-            />
-          }
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={styles.scrollContent}
-        >
-          {selectedTab === "DAY" && (
-            <DayView
-              date={selectedDateString}
-              tasks={getDailyTasks(selectedDateString)}
-              progress={getDailyProgress(selectedDateString)}
-              theme={internalTheme}
-            />
-          )}
+        <View style={styles.content} {...panResponder.panHandlers}>
+          <Animated.View
+            style={[
+              styles.slideRow,
+              {
+                width: screenWidth * TABS.length,
+                transform: [{ translateX: contentTranslateX }],
+              },
+            ]}
+          >
+            {/* Each pane is exactly `screenWidth` wide, matching the
+                translateX step used in goToIndex / panResponder. Each pane
+                owns its own ScrollView + RefreshControl so pull-to-refresh
+                and vertical scrolling keep working independently per tab. */}
+            <View style={[styles.slidePane, { width: screenWidth }]}>
+              <ScrollView
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={onRefresh}
+                    tintColor={C.accent}
+                    colors={[C.accent]}
+                  />
+                }
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.scrollContent}
+              >
+                <DayView
+                  date={selectedDateString}
+                  tasks={getDailyTasks(selectedDateString)}
+                  progress={getDailyProgress(selectedDateString)}
+                  theme={internalTheme}
+                />
+              </ScrollView>
+            </View>
 
-          {selectedTab === "WEEK" && (
-            <WeekView progress={getWeeklyProgress()} theme={internalTheme} />
-          )}
+            <View style={[styles.slidePane, { width: screenWidth }]}>
+              <ScrollView
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={onRefresh}
+                    tintColor={C.accent}
+                    colors={[C.accent]}
+                  />
+                }
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.scrollContent}
+              >
+                <WeekView progress={getWeeklyProgress()} theme={internalTheme} />
+              </ScrollView>
+            </View>
 
-          {selectedTab === "MONTH" && (
-            <MonthView
-              progress={getMonthlyProgress()}
-              calendarData={calendarData}
-              groupedTasks={groupedTasks}
-              theme={internalTheme}
-            />
-          )}
-        </ScrollView>
+            <View style={[styles.slidePane, { width: screenWidth }]}>
+              <ScrollView
+                refreshControl={
+                  <RefreshControl
+                    refreshing={refreshing}
+                    onRefresh={onRefresh}
+                    tintColor={C.accent}
+                    colors={[C.accent]}
+                  />
+                }
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.scrollContent}
+              >
+                <MonthView
+                  progress={getMonthlyProgress()}
+                  calendarData={calendarData}
+                  groupedTasks={groupedTasks}
+                  theme={internalTheme}
+                />
+              </ScrollView>
+            </View>
+          </Animated.View>
+        </View>
       )}
 
       {/* ── Sidebar overlay ── */}
@@ -636,6 +738,21 @@ const styles = StyleSheet.create({
     flex: 1,
     fontSize: 13,
     fontWeight: "600",
+  },
+
+  content: {
+    flex: 1,
+    overflow: "hidden",
+  },
+
+  slideRow: {
+    flex: 1,
+    flexDirection: "row",
+  },
+
+  slidePane: {
+    // width set inline to `screenWidth` — keep unpadded at this level so
+    // the row's total width exactly equals screenWidth * TABS.length.
   },
 
   scrollContent: {

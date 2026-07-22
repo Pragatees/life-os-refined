@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
+  PanResponder,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { Ionicons } from "@expo/vector-icons";
@@ -22,9 +23,6 @@ import EditTask from "../(task)/editTask";
 import Sidebar from "../(tabs)/sidebar";
 
 // ─── Theme Tokens (Claymorphism) ───────────────────────────────────────────
-// Dark = near-black with warm amber/orange + green accents.
-// Bright = white / soft grey, same warm accent for consistency.
-// No blue, purple, violet, or pink anywhere in the palette.
 const DARK = {
   bg: "#0A0A0B",
   surface: "#18181B",
@@ -74,6 +72,7 @@ const TABS: {
 ];
 
 const getSidebarWidth = () => Math.min(300, Dimensions.get("window").width * 0.8);
+const getScreenWidth = () => Dimensions.get("window").width;
 
 // ─── Dashboard ────────────────────────────────────────────────────────────────
 export default function Dashboard() {
@@ -87,6 +86,9 @@ export default function Dashboard() {
   const [fullName, setFullName] = useState("");
   const [username, setUsername] = useState("");
 
+  // ── Screen width (for slide math) ──────────────────────────────────────────
+  const [screenWidth, setScreenWidth] = useState(getScreenWidth());
+
   // ── Sidebar slide + backdrop animation values ─────────────────────────────
   const translateX = useRef(new Animated.Value(-getSidebarWidth())).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
@@ -95,12 +97,22 @@ export default function Dashboard() {
   const headerFade = useRef(new Animated.Value(0)).current;
   const headerSlide = useRef(new Animated.Value(-8)).current;
 
-  // ── Keep sidebar width in sync with orientation / window changes ──────────
+  // ── Tab slide animation ─────────────────────────────────────────────────────
+  const activeIndexRef = useRef(TABS.findIndex((t) => t.id === activeTab));
+  const contentTranslateX = useRef(
+    new Animated.Value(-activeIndexRef.current * getScreenWidth())
+  ).current;
+
+  // ── Keep sidebar width + screen width in sync with orientation / window changes ──
   useEffect(() => {
     const subscription = Dimensions.addEventListener("change", () => {
       const w = getSidebarWidth();
       setSidebarWidth(w);
       if (!sidebarOpen) translateX.setValue(-w);
+
+      const sw = getScreenWidth();
+      setScreenWidth(sw);
+      contentTranslateX.setValue(-activeIndexRef.current * sw);
     });
     return () => subscription.remove();
   }, [sidebarOpen]);
@@ -134,7 +146,7 @@ export default function Dashboard() {
     }
   }, [themeLoaded, headerFade, headerSlide]);
 
-  // ── Drive the slide animation purely from sidebarOpen ─────────────────────
+  // ── Drive the sidebar slide animation purely from sidebarOpen ─────────────
   useEffect(() => {
     if (sidebarOpen) {
       setSidebarMounted(true);
@@ -182,6 +194,70 @@ export default function Dashboard() {
   const handleTaskChanged = useCallback(() => setRefreshTrigger((n) => n + 1), []);
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
+
+  // ── Animate to a given tab index, update state + ref ──────────────────────
+  const goToIndex = useCallback(
+    (index: number) => {
+      const clamped = Math.max(0, Math.min(TABS.length - 1, index));
+      activeIndexRef.current = clamped;
+      setActiveTab(TABS[clamped].id);
+      Animated.spring(contentTranslateX, {
+        toValue: -clamped * screenWidth,
+        useNativeDriver: true,
+        friction: 10,
+        tension: 60,
+      }).start();
+    },
+    [screenWidth, contentTranslateX]
+  );
+
+  const handleTabPress = useCallback(
+    (tabId: Tab) => {
+      const index = TABS.findIndex((t) => t.id === tabId);
+      goToIndex(index);
+    },
+    [goToIndex]
+  );
+
+  // ── Swipe gesture for the content area ─────────────────────────────────────
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => false,
+      onMoveShouldSetPanResponder: (_evt, gestureState) => {
+        return (
+          Math.abs(gestureState.dx) > 12 &&
+          Math.abs(gestureState.dx) > Math.abs(gestureState.dy) * 1.5
+        );
+      },
+      onPanResponderMove: (_evt, gestureState) => {
+        const base = -activeIndexRef.current * screenWidth;
+        let next = base + gestureState.dx;
+
+        // Add resistance at the edges (first/last tab)
+        const min = -(TABS.length - 1) * screenWidth;
+        const max = 0;
+        if (next > max) next = max + (next - max) * 0.3;
+        if (next < min) next = min + (next - min) * 0.3;
+
+        contentTranslateX.setValue(next);
+      },
+      onPanResponderRelease: (_evt, gestureState) => {
+        const threshold = screenWidth * 0.22;
+        let targetIndex = activeIndexRef.current;
+
+        if (gestureState.dx < -threshold) {
+          targetIndex = activeIndexRef.current + 1;
+        } else if (gestureState.dx > threshold) {
+          targetIndex = activeIndexRef.current - 1;
+        }
+
+        goToIndex(targetIndex);
+      },
+      onPanResponderTerminate: () => {
+        goToIndex(activeIndexRef.current);
+      },
+    })
+  ).current;
 
   const C = theme === "bright" ? BRIGHT : DARK;
   const displayName = (fullName || username || "").trim();
@@ -257,11 +333,38 @@ export default function Dashboard() {
         </TouchableOpacity>
       </Animated.View>
 
-      {/* ── Content ── */}
-      <View style={styles.content}>
-        {activeTab === "tasks" && <EditTask theme={theme} onTaskChanged={handleTaskChanged} />}
-        {activeTab === "add" && <AddTask theme={theme} onTaskAdded={handleTaskChanged} />}
-        {activeTab === "progress" && <ProgressTask key={refreshTrigger} theme={theme} />}
+      {/* ── Content (swipeable, slides between tabs) ── */}
+      <View style={styles.content} {...panResponder.panHandlers}>
+        <Animated.View
+          style={[
+            styles.slideRow,
+            {
+              width: screenWidth * TABS.length,
+              transform: [{ translateX: contentTranslateX }],
+            },
+          ]}
+        >
+          {/* Each pane is exactly `screenWidth` wide so it lines up with the
+              translateX step size used in goToIndex / panResponder. Any
+              horizontal padding must live on the INNER wrapper, never on
+              the pane itself, or the row's total width drifts away from
+              screenWidth * TABS.length and later tabs misalign. */}
+          <View style={[styles.slidePane, { width: screenWidth }]}>
+            <View style={styles.slidePaneInner}>
+              <EditTask theme={theme} onTaskChanged={handleTaskChanged} />
+            </View>
+          </View>
+          <View style={[styles.slidePane, { width: screenWidth }]}>
+            <View style={styles.slidePaneInner}>
+              <AddTask theme={theme} onTaskAdded={handleTaskChanged} />
+            </View>
+          </View>
+          <View style={[styles.slidePane, { width: screenWidth }]}>
+            <View style={styles.slidePaneInner}>
+              <ProgressTask key={refreshTrigger} theme={theme} />
+            </View>
+          </View>
+        </Animated.View>
       </View>
 
       {/* ── Floating Tab Bar ── */}
@@ -278,7 +381,7 @@ export default function Dashboard() {
               <TouchableOpacity
                 key={tab.id}
                 style={styles.tabItem}
-                onPress={() => setActiveTab(tab.id)}
+                onPress={() => handleTabPress(tab.id)}
                 activeOpacity={0.8}
               >
                 {active ? (
@@ -438,6 +541,22 @@ const styles = StyleSheet.create({
 
   content: {
     flex: 1,
+    overflow: "hidden",
+  },
+
+  slideRow: {
+    flex: 1,
+    flexDirection: "row",
+  },
+
+  slidePane: {
+    // width is set inline to `screenWidth` — keep unpadded so the row's
+    // total width exactly equals screenWidth * TABS.length.
+  },
+
+  slidePaneInner: {
+    flex: 1,
+    paddingHorizontal: 16,
   },
 
   tabBarWrap: {
