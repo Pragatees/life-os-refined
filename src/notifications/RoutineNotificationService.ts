@@ -96,6 +96,10 @@
  * .dailyProgress` (never fetched or mutated here). This service never
  * touches task scheduling, cancellation, or completion — that stays owned
  * entirely by TaskNotificationService.
+ *
+ * COPY REVISION (this pass): message pools and body templates only —
+ * richer, more varied, more visual notification copy. No scheduling,
+ * subscription, debounce, guard, or state-derivation logic was touched.
  * ============================================================================
  */
 
@@ -126,50 +130,60 @@ import {
 // -----------------------------------------------------------------------------
 
 const MORNING_MOTIVATION_MESSAGES: readonly string[] = [
-  "Good morning! Let's make today productive.",
-  "Small steps every day lead to big success.",
-  "Today is another opportunity to grow.",
-  "Discipline beats motivation. Show up anyway.",
-  "You don't have to be great to start, but you have to start to be great.",
-  "Focus on progress, not perfection.",
-  "Every task you finish today is a promise kept to yourself.",
-  "The secret of getting ahead is getting started.",
-  "One task at a time. That's how mountains get climbed.",
-  "Make today so awesome that yesterday gets jealous.",
+  "🌅 Rise and shine! A brand new day, zero mistakes in it yet.",
+  "☕ Good morning! Let's turn today's to-do list into a done list.",
+  "🚀 Small steps, repeated daily, launch big results. Let's go!",
+  "🌱 Today is fresh soil — plant something worth growing.",
+  "💪 Discipline beats motivation. Show up anyway, champion.",
+  "✨ You don't have to be great to start, but you have to start to be great.",
+  "🎯 Focus on progress, not perfection. One task at a time.",
+  "🔥 Every task you finish today is a promise kept to yourself.",
+  "🧭 The secret of getting ahead is simply getting started.",
+  "🏔️ One task at a time — that's how mountains get climbed.",
+  "🌤️ Make today so awesome that yesterday gets jealous.",
+  "⚡ New day, new energy, same goal: get things done.",
+  "📈 Consistency compounds. Show up today and let it add up.",
+  "🌻 Bloom where you're planted — starting with your first task today.",
 ];
 
 // State 1: no tasks exist yet today at all.
 const ENGAGEMENT_NO_TASKS_MESSAGES: readonly string[] = [
-  "You don't have any tasks today. Add a few and make it productive.",
-  "Your list is empty — create some tasks and get today moving.",
-  "Nothing planned yet. Add a task or two to give today some direction.",
+  "📝 Your list is looking a little empty. Add a task or two and give today some direction!",
+  "🗒️ Nothing planned yet — a blank page is just an invitation. What will you tackle today?",
+  "✨ Today's canvas is wide open. Sketch out a task and let's get moving!",
+  "🌤️ No tasks yet, no problem — a fresh list means a fresh start. Add one now!",
 ];
 
 // State 2: tasks exist, but zero have been completed yet.
 const ENGAGEMENT_ZERO_PROGRESS_TEMPLATES: readonly string[] = [
-  "You have {total} task{totalPlural} waiting — let's knock out the first one!",
-  "Nothing completed yet today. {total} task{totalPlural} to go, you've got this.",
-  "Ready when you are — {total} task{totalPlural} are still on your list today.",
+  "🚦 {total} task{totalPlural} on deck and ready to go — let's knock out the first one!",
+  "⏳ Nothing completed yet today. {total} task{totalPlural} waiting — you've got this!",
+  "🎬 Ready when you are — {total} task{totalPlural} on today's list. Time to make your move!",
+  "🔋 Fully charged and {total} task{totalPlural} to go. Let's get that first win!",
 ];
 
 // State 3: some completed, some still pending.
 const ENGAGEMENT_PARTIAL_PROGRESS_TEMPLATES: readonly string[] = [
-  "You're at {completed}/{total} — {pending} left. Keep going!",
-  "Nice progress: {completed} of {total} done, {pending} to go.",
-  "Making headway — {pending} task{pendingPlural} still remaining today.",
+  "🚴 You're at {completed}/{total} — {pending} left. Keep the momentum going!",
+  "📊 Nice progress: {completed} of {total} done, {pending} task{pendingPlural} to go.",
+  "🔥 Making real headway — {pending} task{pendingPlural} still remaining today. Push through!",
+  "🏁 Halfway (or better!) through your list — {completed}/{total} complete. Finish strong!",
 ];
 
 // State 4: everything scheduled for today is complete.
 const ENGAGEMENT_COMPLETED_TEMPLATES: readonly string[] = [
-  "All {total} task{totalPlural} complete! Add another and keep the momentum going.",
-  "You crushed all {total} task{totalPlural} today. Why stop now — add a bonus task?",
-  "100% done for today! Give yourself one more task and make it a great day.",
+  "🎉 All {total} task{totalPlural} complete! Add another and keep the streak alive.",
+  "🏆 You crushed all {total} task{totalPlural} today. Why stop now — add a bonus task?",
+  "💯 100% done for today! Give yourself one more win and make it a great day.",
+  "🌟 Clean sweep — {total}/{total} finished! Ride the momentum with one more task.",
 ];
 
 const EVENING_PLANNING_MESSAGES: readonly string[] = [
-  "Plan tomorrow today.",
-  "Prepare tomorrow's priorities.",
-  "Review your day and set tomorrow's goals.",
+  "🌆 Golden hour, great time to plan tomorrow. What's priority #1?",
+  "🗓️ Prepare tomorrow's priorities tonight — future you will thank you.",
+  "🌙 Take five minutes to review today and set tomorrow's goals.",
+  "🧠 A little planning tonight saves a lot of scrambling tomorrow morning.",
+  "🕯️ Wind down and map out tomorrow — clarity tonight, momentum tomorrow.",
 ];
 
 const DASHBOARD_SCREEN = "Dashboard";
@@ -441,12 +455,12 @@ class RoutineNotificationService {
     const pending = Math.max(0, total - completed);
 
     if (pending === 0) {
-      return `${quote}\nYesterday you completed all ${total} task${
+      return `${quote}\n🏅 Yesterday you completed all ${total} task${
         total === 1 ? "" : "s"
       } — keep that streak alive today!`;
     }
 
-    return `${quote}\nYesterday: ${completed}/${total} done. Let's beat that today!`;
+    return `${quote}\n📈 Yesterday: ${completed}/${total} done. Let's beat that today!`;
   }
 
   /**
@@ -797,7 +811,7 @@ class RoutineNotificationService {
     );
 
     if (counts.total === 0) {
-      return "No tasks were created today. Tomorrow is another opportunity to plan and get things done.";
+      return "🌙 No tasks were created today. Tomorrow is a fresh page — let's plan and get things done.";
     }
 
     // Persist today's counts so tomorrow's Morning Motivation can reference
@@ -805,7 +819,15 @@ class RoutineNotificationService {
     // block the Daily Summary notification itself.
     await this.saveDailySummarySnapshot(counts.completed, counts.total);
 
-    return `Completed: ${counts.completed}/${counts.total}\nPending: ${counts.pending}`;
+    if (counts.completed >= counts.total) {
+      return `🎉 Perfect day! ${counts.completed}/${counts.total} completed.\n✅ Pending: ${counts.pending}\nRest up — tomorrow's another chance to shine.`;
+    }
+
+    if (counts.completed === 0) {
+      return `📊 Today's wrap-up:\n✅ Completed: ${counts.completed}/${counts.total}\n⏳ Pending: ${counts.pending}\nTomorrow's a clean slate — let's start strong.`;
+    }
+
+    return `📊 Today's wrap-up:\n✅ Completed: ${counts.completed}/${counts.total}\n⏳ Pending: ${counts.pending}\nSolid effort — carry that momentum into tomorrow!`;
   }
 
   /**

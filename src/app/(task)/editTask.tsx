@@ -650,8 +650,27 @@ export default function EditTaskComponent({ onTaskChanged, theme = "dark" }: Edi
   const [toastMsg,     setToastMsg]     = useState("");
   const [toastVisible, setToastVisible] = useState(false);
 
-  // Fetch once on mount — store's cache guard prevents duplicate calls
-  useEffect(() => { fetchTasks(); }, [fetchTasks]);
+  // FIX: this used to be `useEffect(() => { fetchTasks(); }, [fetchTasks]);`
+  // which fires on every mount of this component. Since React Navigation
+  // typically unmounts/remounts screens on blur/focus, that meant every time
+  // the user simply navigated back to this tab, it would hit the network
+  // again once the 30s CACHE_TTL in the store had elapsed — causing a
+  // visible "reload" even though nothing had actually changed.
+  //
+  // The task store is a single shared (and persisted) Zustand store — every
+  // mutation (addTask / updateTask / deleteTask / markComplete) already calls
+  // fetchTasks(true) internally and writes into the SAME `tasks` array this
+  // component reads via the selector above. That means this screen already
+  // re-renders automatically the instant a real change happens anywhere in
+  // the app — it does not need to trigger its own fetch on every mount.
+  //
+  // So: only fetch here if we don't have anything to show yet (first app
+  // load / cold store). Manual pull-to-refresh below still force-fetches.
+  useEffect(() => {
+    if (tasks.length === 0) {
+      fetchTasks();
+    }
+  }, [fetchTasks, tasks.length]);
 
   const showToast = useCallback((msg: string) => {
     setToastMsg(msg); setToastVisible(true);

@@ -3,10 +3,9 @@
  * LifeOS Task Notification Service
  * ============================================================================
  *
- * FIX 1 (carried over): scheduleReminder() used to reimplement the
- * ">15 / 6-14 / <=5" smart-reminder branching independently of
- * NotificationHelper's getReminderOffset()/getSmartReminderTrigger(). Now
- * calls NotificationHelper exclusively — single source of truth.
+ * FIX 1 (carried over): scheduleReminder() delegates smart-reminder
+ * branching entirely to NotificationHelper.getReminderOffset()/
+ * getSmartReminderTrigger() — single source of truth.
  *
  * FIX 2 (carried over): The "immediate" trigger buffer comes from
  * TASK_REMINDER.IMMEDIATE_BUFFER_SECONDS (5s) via
@@ -14,45 +13,69 @@
  * `Date.now() + 1000` that could expire before scheduleNotificationAsync()
  * ran under JS-thread contention.
  *
- * FIX 3 (this revision): `scheduleTask()` used to gate ALL three
- * sub-notifications (Reminder, Due, Overdue) behind a single
- * `canSchedule(taskDateTime)` check. But the Overdue trigger is
- * `taskDateTime + OVERDUE_AFTER`, which can still be in the future even
- * when `taskDateTime` itself has already passed. That single early return
- * silently skipped scheduling the Overdue notification any time
- * scheduleTask/rescheduleTask ran after a task's due time but before its
- * overdue window elapsed (e.g. reopening the app right after a task
- * became due). The gate now checks against the Overdue trigger — the
- * furthest-future of the three — and each sub-scheduler still keeps its
- * own independent `canSchedule()` check for its own trigger.
+ * FIX 3 (carried over): `scheduleTask()` gates all three sub-notifications
+ * (Reminder, Due, Overdue) against the Overdue trigger — the furthest-future
+ * of the three — instead of gating everything on `taskDateTime` alone, which
+ * incorrectly skipped the Overdue notification for tasks whose due time had
+ * passed but whose overdue window was still ahead. Each sub-scheduler still
+ * independently checks its own trigger.
  *
- * FIX 4 (this revision): `syncInFlight` previously only prevented
- * `syncTasks()` from racing against itself. It did nothing to stop a
- * direct call — e.g. `markComplete`/`updateTask` in the store calling
- * `onTaskCompleted`/`rescheduleTask` directly — from racing a concurrent
- * `syncTasks()` sweep touching the SAME task's notification IDs (cancel
- * and (re)schedule interleaving unpredictably). All task-mutating entry
- * points (`scheduleTask`, `cancelTask`, `rescheduleTask`,
- * `onTaskCompleted`, `onTaskDeleted`) now serialize through a per-taskId
- * lock (`withTaskLock`), so operations on the same task always run one at
- * a time and in call order, while operations on different tasks still run
- * fully in parallel. `syncTasks()`'s per-task loop goes through the same
- * public, lock-guarded methods, so it composes correctly with direct
- * calls instead of racing them.
+ * FIX 4 (carried over): All task-mutating entry points (`scheduleTask`,
+ * `cancelTask`, `rescheduleTask`, `onTaskCompleted`, `onTaskDeleted`)
+ * serialize through a per-taskId lock (`withTaskLock`), so operations on the
+ * SAME task always run one at a time in call order, while operations on
+ * DIFFERENT tasks run fully in parallel. `syncTasks()`'s per-task loop goes
+ * through these same lock-guarded methods.
  *
- * FEATURE 1 (new): completion feedback. `onTaskCompleted()` now looks the
- * task up in TaskStore (this is the "correctly linked with the task
- * store" part — it reads the live task record, not just an id) and fires
- * a short feedback notification a few seconds later:
- *   - Completed at or before the task's due time  -> a congrats message.
- *   - Completed after the task's due time         -> an encouraging
- *     "finish before the deadline next time" message.
+ * FIX 5 (this revision — stops the duplicate/perpetual-reminder bug):
+ * `doSyncTasks()` used to unconditionally cancel + reschedule EVERY
+ * incomplete task's notifications on EVERY sync pass. `syncTasks()` runs
+ * after every `fetchTasks(true)` call in the store — i.e. after literally
+ * ANY task anywhere is added, edited, completed, or deleted. That meant a
+ * task whose data had NOT changed at all still got its Reminder/Due/Overdue
+ * notifications cancelled and recreated from scratch every single time some
+ * *other* task changed. For a "smart" Reminder computed as "isImmediate"
+ * (task due within a few minutes), the trigger time is `now + buffer`
+ * recomputed at schedule time — so each unrelated sync pass pushed that
+ * reminder's actual fire time further into the future, and if syncs kept
+ * happening, the reminder could be cancelled just before it fired and
+ * replaced with a new later one indefinitely, so the user never actually
+ * got notified. The logs showed exactly this: the same task's Reminder
+ * notification getting a new random identifier and a new (later) trigger
+ * three times in under two minutes, none of which had anything to do with
+ * that task changing.
  *
- * FEATURE 2 (new, closes the loop): `onTaskCompleted()` cancels the
- * task's Reminder/Due/Overdue notifications FIRST, then schedules the
- * completion feedback — so a completed task never has a stray Due/Overdue
- * notification fire later, and the feedback notification itself isn't
- * immediately cancelled by that same cleanup step.
+ * The fix: a per-task signature cache (`lastSyncedSignature`) capturing only
+ * the fields that actually affect scheduling (`completed`, `taskDate`,
+ * `taskTime`, `priority`, `repeatType`). `doSyncTasks()` now skips any task
+ * whose signature is unchanged since the last sync — it is left alone,
+ * notifications untouched. Every direct mutation path (`scheduleTask`,
+ * `onTaskCompleted`, `onTaskDeleted`, `cancelTask`) keeps this cache in sync
+ * too, so an immediately-following `syncTasks()` pass (triggered by the same
+ * store update) sees a matching signature and does nothing redundant.
+ *
+ * FIX 6 (this revision — delete safety net): if a task disappears from the
+ * store between sync passes — whether via `deleteTask`'s normal
+ * `cancelTask()` call, or via ANY other code path that removes a task
+ * without explicitly notifying this service (e.g. a UI-level delete
+ * implementation that talks to the API directly and forgets to call into
+ * notifications) — `doSyncTasks()` now diffs the tracked task ids against
+ * the current store snapshot and force-cancels notifications for any id
+ * that vanished. This does not replace calling `cancelTask`/`onTaskDeleted`
+ * from the actual delete path (see note in EditTask.tsx), but it guarantees
+ * that stale notifications for deleted tasks cannot survive past the next
+ * sync even if a caller forgets to clean up after itself.
+ *
+ * FEATURE 1 (carried over): completion feedback. `onTaskCompleted()` looks
+ * the task up in TaskStore and fires a short feedback notification a few
+ * seconds later — a congrats message if completed on/before the due time,
+ * or an encouraging nudge if completed late.
+ *
+ * FEATURE 2 (carried over): `onTaskCompleted()` cancels the task's
+ * Reminder/Due/Overdue notifications FIRST, then schedules the completion
+ * feedback — so a completed task never has a stray Due/Overdue notification
+ * fire later, and the feedback notification isn't immediately cancelled by
+ * that same cleanup step.
  *
  * ── REQUIRED companion change ────────────────────────────────────────────
  * This file references two new payload discriminators,
@@ -70,6 +93,16 @@
  *
  * Without that addition, this file will fail to compile — TypeScript
  * doesn't have a way to add enum members from a consuming file.
+ *
+ * ── REQUIRED companion change for the delete bug ─────────────────────────
+ * components/EditTask.tsx currently deletes tasks via a LOCAL
+ * `deleteTaskRequest()` helper that calls the API directly and never calls
+ * into this service at all — it bypasses `useTaskStore.deleteTask`, which is
+ * the action that actually calls `TaskNotificationService.cancelTask`. Swap
+ * `handleDelete` in EditTask.tsx to call the store's `deleteTask(task.id)`
+ * action instead of the local `deleteTaskRequest()` helper. FIX 6 above adds
+ * a safety net so stale notifications get cleaned up on the next sync
+ * either way, but the store action is the correct, immediate fix.
  * ============================================================================
  */
 
@@ -84,6 +117,9 @@ import {
   NotificationType,
   TaskNotificationType,
 } from "../core/NotificationTypes";
+
+const COMPLETED_ON_TIME = "COMPLETED_ON_TIME" as TaskNotificationType;
+const COMPLETED_LATE = "COMPLETED_LATE" as TaskNotificationType;
 
 import {
   LOGGER_TAG,
@@ -104,6 +140,24 @@ class TaskNotificationService {
    * for DIFFERENT tasks are unaffected and run concurrently.
    */
   private taskLocks: Map<string, Promise<void>> = new Map();
+
+  /**
+   * FIX 5: signature of the last-synced schedule-relevant fields for each
+   * task, keyed by taskId. Used by doSyncTasks() to skip tasks that
+   * haven't actually changed, so an unrelated task mutation elsewhere in
+   * the app can no longer cancel/reschedule THIS task's notifications.
+   */
+  private lastSyncedSignature: Map<string, string> = new Map();
+
+  private computeTaskSignature(task: Task): string {
+    return [
+      task.completed ? "1" : "0",
+      task.taskDate,
+      task.taskTime,
+      task.priority,
+      task.repeatType ?? "NEVER",
+    ].join("|");
+  }
 
   private async withTaskLock<T>(
     taskId: string,
@@ -177,16 +231,49 @@ class TaskNotificationService {
         tasks.length
       );
 
+      const currentIds = new Set<string>();
+
       for (const task of tasks) {
-        if (task.completed) {
-          // Routed through the public method so it takes the per-task
-          // lock and can't interleave with a concurrent direct call for
-          // this same task.
-          await this.cancelTask(task.id);
+        currentIds.add(task.id);
+
+        const signature = this.computeTaskSignature(task);
+        const previousSignature = this.lastSyncedSignature.get(task.id);
+
+        if (previousSignature === signature) {
+          // Nothing that affects this task's notifications changed since
+          // the last sync (completion state, date, time, priority, or
+          // repeat type) — leave its notifications exactly as they are.
+          //
+          // Without this check, syncTasks() re-cancelled and
+          // re-scheduled EVERY incomplete task's notifications on EVERY
+          // sync pass, and a sync pass runs after literally any task
+          // anywhere is added/edited/completed/deleted. A Reminder
+          // notification computed as "isImmediate" recomputes its trigger
+          // as `now + buffer` at schedule time, so it kept getting pushed
+          // further into the future by unrelated mutations — potentially
+          // forever, meaning it could be cancelled moments before firing
+          // and never actually reach the user.
           continue;
         }
 
-        await this.rescheduleTask(task);
+        if (task.completed) {
+          await this.cancelTask(task.id);
+        } else {
+          await this.rescheduleTask(task);
+        }
+
+        this.lastSyncedSignature.set(task.id, signature);
+      }
+
+      // FIX 6: safety net for deletions. If a task we were previously
+      // tracking has disappeared from the store entirely, make sure its
+      // notifications are actually cancelled — even if whatever deleted it
+      // forgot to call cancelTask()/onTaskDeleted() itself.
+      for (const trackedId of Array.from(this.lastSyncedSignature.keys())) {
+        if (!currentIds.has(trackedId)) {
+          await this.cancelTask(trackedId);
+          this.lastSyncedSignature.delete(trackedId);
+        }
       }
 
       NotificationLogger.synchronizationCompleted(LOGGER_TAG.TASK);
@@ -208,6 +295,7 @@ class TaskNotificationService {
     try {
       if (task.completed) {
         NotificationLogger.skippedCompletedTask(task.taskName);
+        this.lastSyncedSignature.set(task.id, this.computeTaskSignature(task));
         return;
       }
 
@@ -223,11 +311,12 @@ class TaskNotificationService {
 
       // A task is only fully unschedulable once even its Overdue trigger
       // — the furthest-future of the three — has already passed. Gating
-      // on taskDateTime alone (the old behavior) incorrectly skipped the
-      // Overdue notification for tasks whose due time had passed but
-      // whose overdue window was still ahead.
+      // on taskDateTime alone incorrectly skipped the Overdue notification
+      // for tasks whose due time had passed but whose overdue window was
+      // still ahead.
       if (!NotificationHelper.canSchedule(overdueTrigger)) {
         NotificationLogger.skippedPastTask(task.taskName);
+        this.lastSyncedSignature.set(task.id, this.computeTaskSignature(task));
         return;
       }
 
@@ -240,6 +329,12 @@ class TaskNotificationService {
       await this.scheduleOverdueNotification(task);
 
       NotificationLogger.taskScheduled(task.taskName);
+
+      // FIX 5: record what we just scheduled against, so an immediately
+      // following syncTasks() pass (e.g. triggered by the same store
+      // update that led here) sees a matching signature and skips this
+      // task instead of redundantly cancelling and rescheduling it.
+      this.lastSyncedSignature.set(task.id, this.computeTaskSignature(task));
     } catch (error) {
       NotificationLogger.error(
         LOGGER_TAG.TASK,
@@ -453,8 +548,8 @@ class TaskNotificationService {
             type: NotificationType.TASK,
             taskId: task.id,
             notificationType: completedOnTime
-              ? ("COMPLETED_ON_TIME" as TaskNotificationType)
-              : ("COMPLETED_LATE" as TaskNotificationType),
+              ? TaskNotificationType.COMPLETED_ON_TIME
+              : TaskNotificationType.COMPLETED_LATE,
           },
         },
       });
@@ -486,6 +581,13 @@ class TaskNotificationService {
   private async cancelTaskInternal(taskId: string): Promise<void> {
     try {
       await NotificationScheduler.cancelTaskNotifications(taskId);
+
+      // Any call to cancelTask() means we no longer want to remember a
+      // "last synced" schedule for this task — the caller above (sync
+      // loop, onTaskCompleted, onTaskDeleted, etc.) is responsible for
+      // re-adding an entry afterward if the task still exists in some
+      // other state (e.g. now marked completed).
+      this.lastSyncedSignature.delete(taskId);
 
       NotificationLogger.taskCancelled(taskId);
     } catch (error) {
@@ -552,7 +654,14 @@ class TaskNotificationService {
 
       if (task) {
         await this.scheduleCompletionFeedback(task);
+
+        // Record the completed signature so a following syncTasks() pass
+        // (also triggered by this same completion, via fetchTasks(true))
+        // recognizes nothing further changed and doesn't redundantly
+        // cancel this task's (already-cancelled) notifications again.
+        this.lastSyncedSignature.set(taskId, this.computeTaskSignature(task));
       } else {
+        this.lastSyncedSignature.delete(taskId);
         NotificationLogger.info(
           LOGGER_TAG.TASK,
           `Task ${taskId} was not found in TaskStore at completion time — skipped completion feedback.`
@@ -582,6 +691,7 @@ class TaskNotificationService {
 
   private async onTaskDeletedInternal(taskId: string): Promise<void> {
     await this.cancelTaskInternal(taskId);
+    this.lastSyncedSignature.delete(taskId);
 
     NotificationLogger.taskDeleted(taskId);
   }
@@ -596,6 +706,9 @@ class TaskNotificationService {
       const { tasks } = useTaskStore.getState();
 
       await Promise.all(tasks.map((task) => this.cancelTask(task.id)));
+
+      // Store is about to be cleared on logout — nothing left to track.
+      this.lastSyncedSignature.clear();
 
       NotificationLogger.info(
         LOGGER_TAG.TASK,

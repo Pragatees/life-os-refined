@@ -4,8 +4,11 @@ import {
   ActivityIndicator,
   Animated,
   Dimensions,
+  NativeScrollEvent,
+  NativeSyntheticEvent,
   Platform,
   SafeAreaView,
+  ScrollView,
   StatusBar,
   StyleSheet,
   Text,
@@ -69,11 +72,14 @@ const BRIGHT = {
   shadowDark: "#B9B9C0",
 };
 
-
 type Theme = "bright" | "dark";
 type NotesTab = "add" | "view";
 
 const getSidebarWidth = () => Math.min(300, Dimensions.get("window").width * 0.8);
+
+// Tab order — must match the tab bar buttons below. Used to translate a
+// swipe's scroll offset into a tab id and vice-versa.
+const TAB_ORDER: NotesTab[] = ["add", "view"];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 // Local-time "YYYY-MM-DD" (avoids the UTC midnight-rollover bug that
@@ -118,12 +124,23 @@ export default function NotesScreen(): React.JSX.Element {
   const headerFade = useRef(new Animated.Value(0)).current;
   const headerSlide = useRef(new Animated.Value(-8)).current;
 
-  // ── Keep sidebar width in sync with orientation / window changes ──────
+  // ── Swipeable tab content state ───────────────────────────────────────
+  const [screenWidth, setScreenWidth] = useState(Dimensions.get("window").width);
+  // Which tabs have ever been shown — once visited a tab stays mounted so
+  // swiping back to it doesn't remount / reset its internal state, but we
+  // avoid mounting both screens up front.
+  const [visitedTabs, setVisitedTabs] = useState<Set<NotesTab>>(
+    () => new Set<NotesTab>(["add"])
+  );
+  const contentScrollRef = useRef<ScrollView>(null);
+
+  // ── Keep sidebar width + screen width in sync with orientation changes ─
   useEffect(() => {
-    const subscription = Dimensions.addEventListener("change", () => {
+    const subscription = Dimensions.addEventListener("change", ({ window }) => {
       const w = getSidebarWidth();
       setSidebarWidth(w);
       if (!sidebarOpen) translateX.setValue(-w);
+      setScreenWidth(window.width);
     });
     return () => subscription.remove();
   }, [sidebarOpen]);
@@ -188,6 +205,17 @@ export default function NotesScreen(): React.JSX.Element {
     }
   }, [sidebarOpen, sidebarWidth]);
 
+  // ── Keep the swipeable content area aligned to the active tab whenever
+  //    the screen width changes (e.g. device rotation). ───────────────────
+  useEffect(() => {
+    const idx = TAB_ORDER.indexOf(activeTab);
+    if (idx < 0) return;
+    contentScrollRef.current?.scrollTo({ x: idx * screenWidth, animated: false });
+    // Only re-run when the width itself changes — activeTab changes are
+    // already handled by handleTabPress / handleContentScrollSettled below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [screenWidth]);
+
   // ── Toggle & persist theme (same AsyncStorage key as Dashboard,
   //    so switching it here stays in sync app-wide) ──────────────────────
   const toggleTheme = useCallback(async () => {
@@ -218,12 +246,43 @@ export default function NotesScreen(): React.JSX.Element {
     setRefreshKey((prev) => prev + 1);
   }, []);
 
+  const markVisited = useCallback((tab: NotesTab) => {
+    setVisitedTabs((prev) => (prev.has(tab) ? prev : new Set(prev).add(tab)));
+  }, []);
+
+  // Tapping a tab button: scroll the paging view to that page and mark it
+  // visited so it (re)mounts if this is the first time it's shown.
+  const handleTabPress = useCallback(
+    (tab: NotesTab) => {
+      const idx = TAB_ORDER.indexOf(tab);
+      if (idx < 0) return;
+      markVisited(tab);
+      setActiveTab(tab);
+      contentScrollRef.current?.scrollTo({ x: idx * screenWidth, animated: true });
+    },
+    [markVisited, screenWidth]
+  );
+
+  // Swiping the content: figure out which page we landed on and sync the
+  // active tab + tab bar highlight to match.
+  const handleContentScrollSettled = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (screenWidth <= 0) return;
+      const idx = Math.round(e.nativeEvent.contentOffset.x / screenWidth);
+      const tab = TAB_ORDER[idx];
+      if (!tab) return;
+      markVisited(tab);
+      setActiveTab((current) => (current === tab ? current : tab));
+    },
+    [screenWidth, markVisited]
+  );
+
   // After adding/editing a note, jump the user over to the View tab so
   // they immediately see the result of what they just saved.
   const refreshNotesAndSwitchToView = useCallback(() => {
     setRefreshKey((prev) => prev + 1);
-    setActiveTab("view");
-  }, []);
+    handleTabPress("view");
+  }, [handleTabPress]);
 
   const handleDateChange = useCallback((date: string) => {
     setSelectedDate(date);
@@ -304,7 +363,7 @@ export default function NotesScreen(): React.JSX.Element {
       <View style={[styles.tabBar, { backgroundColor: C.surface, borderColor: C.border, shadowColor: C.shadowDark }]}>
         <TouchableOpacity
           activeOpacity={0.8}
-          onPress={() => setActiveTab("add")}
+          onPress={() => handleTabPress("add")}
           style={[
             styles.tabBtn,
             activeTab === "add" && { backgroundColor: C.accentSoft },
@@ -327,7 +386,7 @@ export default function NotesScreen(): React.JSX.Element {
 
         <TouchableOpacity
           activeOpacity={0.8}
-          onPress={() => setActiveTab("view")}
+          onPress={() => handleTabPress("view")}
           style={[
             styles.tabBtn,
             activeTab === "view" && { backgroundColor: C.accentSoft },
@@ -349,24 +408,42 @@ export default function NotesScreen(): React.JSX.Element {
         </TouchableOpacity>
       </View>
 
-      {/* ── Content: only the active tab is rendered ── */}
-      <View style={styles.content}>
-        {activeTab === "add" ? (
-          <AddAndViewTyped
-            theme={theme}
-            selectedDate={selectedDate}
-            onDateChange={handleDateChange}
-            onRefresh={refreshNotesAndSwitchToView}
-          />
-        ) : (
-          <ViewAndEditTyped
-            theme={theme}
-            selectedDate={selectedDate}
-            refreshKey={refreshKey}
-            onRefresh={refreshNotes}
-          />
-        )}
-      </View>
+      {/* ── Swipeable content (Add/Edit <-> View) — also reachable via the
+           tab bar above. The page for a tab that hasn't been visited yet
+           renders as an empty spacer so paging math stays correct without
+           mounting (and running the effects of) a screen the user hasn't
+           opened yet. ── */}
+      <ScrollView
+        ref={contentScrollRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        scrollEventThrottle={16}
+        onMomentumScrollEnd={handleContentScrollSettled}
+        onScrollEndDrag={handleContentScrollSettled}
+        style={styles.contentScroll}
+      >
+        <View style={[styles.contentPage, { width: screenWidth }]}>
+          {visitedTabs.has("add") && (
+            <AddAndViewTyped
+              theme={theme}
+              selectedDate={selectedDate}
+              onDateChange={handleDateChange}
+              onRefresh={refreshNotesAndSwitchToView}
+            />
+          )}
+        </View>
+        <View style={[styles.contentPage, { width: screenWidth }]}>
+          {visitedTabs.has("view") && (
+            <ViewAndEditTyped
+              theme={theme}
+              selectedDate={selectedDate}
+              refreshKey={refreshKey}
+              onRefresh={refreshNotes}
+            />
+          )}
+        </View>
+      </ScrollView>
 
       {/* ── Sidebar overlay ── */}
       {sidebarMounted && (
@@ -521,7 +598,11 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
 
-  content: {
+  contentScroll: {
+    flex: 1,
+  },
+
+  contentPage: {
     flex: 1,
     paddingHorizontal: 16,
   },
