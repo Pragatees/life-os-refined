@@ -90,7 +90,7 @@ class NotificationResponseService {
           break;
 
         case NotificationType.ROUTINE:
-          router.push((payload?.screen as any) ?? "/dashboard");
+          router.push("/dashboard");
           break;
 
         case NotificationType.SYSTEM:

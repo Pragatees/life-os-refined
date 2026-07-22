@@ -44,6 +44,47 @@ class NotificationScheduler {
     notification: NotificationSchedule
   ): Promise<string | null> {
     try {
+      // FIX: single choke point for the user's per-category on/off
+      // preference. Every domain service (Task/Goal/Note/AI/Account/
+      // Routine) ultimately calls this method, so checking it here once
+      // means the toggle silently applies everywhere without needing to
+      // touch six separate service files. Dynamic import to avoid a
+      // circular dependency — NotificationPreferencesService itself needs
+      // to call NotificationScheduler.cancelByType() when a category is
+      // turned off, so it can't be a static import here.
+      const category = notification.content.payload?.type;
+
+      if (category) {
+        try {
+          // Dynamic import; may not exist in some builds — guard at runtime.
+          // @ts-ignore: runtime import may not have type declarations in this repo
+          const { default: NotificationPreferencesService } = await import(
+            "./Notificationpreferencesservice"
+          );
+
+          const categoryEnabled = await NotificationPreferencesService.isEnabled(
+            category
+          );
+
+          if (!categoryEnabled) {
+            NotificationLogger.debug(
+              LOGGER_TAG.SCHEDULER,
+              `Skipped scheduling — "${category}" notifications are turned off.`,
+              notification
+            );
+            return null;
+          }
+        } catch (err) {
+          // If the module can't be found or fails to load, assume preferences
+          // aren't available and proceed with scheduling.
+          NotificationLogger.debug(
+            LOGGER_TAG.SCHEDULER,
+            "NotificationPreferencesService not available; skipping category check.",
+            { category }
+          );
+        }
+      }
+
       if (!NotificationHelper.canSchedule(notification.trigger)) {
         NotificationLogger.warn(
           LOGGER_TAG.SCHEDULER,

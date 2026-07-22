@@ -577,26 +577,26 @@ const localStyles = StyleSheet.create({
 // ─────────────────────────────────────────────────────────────────────────
 // LOGOUT CLEANUP (do this once, in your auth/logout logic — not in this file)
 // ─────────────────────────────────────────────────────────────────────────
-// Make sure ai_review.ts exports the day key and a shared clear helper so
-// every review screen (day/week/month) clears together on logout:
+// Make sure AIReviewScreen.tsx exports the day key and a shared clear helper
+// so every review screen (day/week/month) clears together on logout:
 //
 //   export const STORAGE_KEYS = {
-//     day: "ai_review_day",
-//     week: "ai_review_week",
-//     month: "ai_review_month",
+//     day: "@ai_review:day",
+//     week: "@ai_review:week",
+//     month: "@ai_review:month",
 //   };
 //
 //   export async function clearAllReviewData() {
 //     try {
 //       await AsyncStorage.multiRemove(Object.values(STORAGE_KEYS));
 //     } catch (e) {
-//       console.error("[ai_review] Failed to clear stored reviews on logout:", e);
+//       console.error("[AIReviewScreen] Failed to clear stored reviews on logout:", e);
 //     }
 //   }
 //
 // Then in your logout handler:
 //
-//   import { clearAllReviewData } from "./app/(task)/ai_review";
+//   import { clearAllReviewData } from "./app/(task)/AIReviewScreen";
 //
 //   export async function logout() {
 //     await clearAllReviewData();
