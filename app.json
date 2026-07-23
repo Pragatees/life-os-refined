@@ -7,12 +7,10 @@
     "icon": "./assets/images/App_icon.png",
     "scheme": "lifeos",
     "userInterfaceStyle": "automatic",
-
     "ios": {
       "bundleIdentifier": "com.pragateesh7.lifeos",
       "icon": "./assets/images/App icon.png"
     },
-
     "android": {
       "package": "com.pragateesh7.lifeos",
       "predictiveBackGestureEnabled": false,
@@ -21,22 +19,20 @@
         "backgroundColor": "#FFFFFF"
       },
       "permissions": [
-        "POST_NOTIFICATIONS",
-        "VIBRATE",
-        "SCHEDULE_EXACT_ALARM",
-        "USE_EXACT_ALARM",
-        "RECEIVE_BOOT_COMPLETED"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.VIBRATE",
+        "android.permission.SCHEDULE_EXACT_ALARM",
+        "android.permission.USE_EXACT_ALARM",
+        "android.permission.RECEIVE_BOOT_COMPLETED",
+        "android.permission.RECORD_AUDIO"
       ]
     },
-
     "web": {
       "output": "static",
       "favicon": "./assets/images/favicon.png"
     },
-
     "plugins": [
       "expo-router",
-
       [
         "expo-splash-screen",
         {
@@ -45,7 +41,6 @@
           "imageWidth": 220
         }
       ],
-
       [
         "expo-notifications",
         {
@@ -54,7 +49,6 @@
           "defaultChannel": "default"
         }
       ],
-
       [
         "expo-image-picker",
         {
@@ -62,24 +56,20 @@
           "cameraPermission": "Allow Life-OS to use your camera so you can take a profile picture."
         }
       ],
-
       "@react-native-community/datetimepicker",
       "@react-native-google-signin/google-signin",
       "expo-web-browser"
     ],
-
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
     },
-
     "extra": {
       "router": {},
       "eas": {
-        "projectId": "ef490d3f-a4fd-44ca-9656-fb0fbba2553a"
+        "projectId": "3ce989c4-4945-409c-a41a-135363bba641"
       }
     },
-
-    "owner": "pragateesh"
+    "owner": "pragateesh-7"
   }
 }

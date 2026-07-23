@@ -14,7 +14,7 @@ import {
 } from "react-native";
 import { router } from "expo-router";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import axios from "axios";
+import axios, { AxiosError } from "axios";
 import { LinearGradient } from "expo-linear-gradient";
 import { Feather } from "@expo/vector-icons";
 import {
@@ -24,15 +24,37 @@ import {
   isSuccessResponse,
 } from "@react-native-google-signin/google-signin";
 
-const API_URL = process.env.EXPO_PUBLIC_API_URL;
+// ─── Environment validation ─────────────────────────────────────────────────
+// Read once at module load and validate before use. If either is missing,
+// the corresponding auth flow fails safely with a user-facing message
+// instead of throwing at request time or silently hitting a bad URL.
+const RAW_API_URL = process.env.EXPO_PUBLIC_API_URL;
+const RAW_GOOGLE_CLIENT_ID = process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID;
+
+if (!RAW_API_URL) {
+  console.error("[SignUp] Missing required environment variable: EXPO_PUBLIC_API_URL");
+}
+if (!RAW_GOOGLE_CLIENT_ID) {
+  console.error("[SignUp] Missing required environment variable: EXPO_PUBLIC_GOOGLE_CLIENT_ID");
+}
+
+const ENV_READY = Boolean(RAW_API_URL);
+const GOOGLE_ENV_READY = Boolean(RAW_GOOGLE_CLIENT_ID);
+
+// Single source of truth for the API base — every request (email/password
+// AND Google) goes through this, so no endpoint can drift out of sync with
+// the others (this is what broke Google sign-up before: it was built from
+// a different, prefix-less base than the manual sign-up call).
+const BASE_URL = ENV_READY ? `${RAW_API_URL}/api` : "";
+const GOOGLE_CLIENT_ID = RAW_GOOGLE_CLIENT_ID ?? "";
 
 // ─── Theme Tokens ───────────────────────────────────────────────────────────
 const T = {
-  bg: ["#0A0A0B", "#141210", "#1C1712"],
+  bg: ["#0A0A0B", "#141210", "#1C1712"] as const,
   surface: "rgba(24, 24, 27, 0.85)",
   surfaceAlt: "rgba(255, 138, 61, 0.08)",
   accent: "#FF8A3D",
-  accentGradient: ["#FF8A3D", "#FFB25E"],
+  accentGradient: ["#FF8A3D", "#FFB25E"] as const,
   success: "#3DD68C",
   warning: "#FFC24B",
   danger: "#FF6B5B",
@@ -44,131 +66,193 @@ const T = {
 };
 
 // ─── Google Sign-In Configuration ───────────────────────────────────────────
-GoogleSignin.configure({
-  webClientId: process.env.EXPO_PUBLIC_GOOGLE_CLIENT_ID,
-  offlineAccess: true,
-});
+// Configured lazily (once, only if a client ID is present) rather than as a
+// module-level side effect, so a missing env var never crashes import.
+let googleSignInConfigured = false;
 
-const isEmail = (s) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s);
+const configureGoogleSignInOnce = (): void => {
+  if (googleSignInConfigured || !GOOGLE_ENV_READY) {
+    return;
+  }
+  GoogleSignin.configure({
+    webClientId: GOOGLE_CLIENT_ID,
+    offlineAccess: true,
+  });
+  googleSignInConfigured = true;
+};
 
-function getStrength(pwd) {
-  if (!pwd.length) return { width: 0, color: T.textFaint, label: "" };
-  const score = [
-    pwd.length >= 8,
-    /[A-Z]/.test(pwd),
-    /[a-z]/.test(pwd),
-    /[0-9]/.test(pwd),
-    /[^A-Za-z0-9]/.test(pwd),
-  ].filter(Boolean).length;
-  if (score <= 2) return { width: 33, color: T.danger, label: "Weak" };
-  if (score <= 3) return { width: 66, color: T.warning, label: "Fair" };
-  return { width: 100, color: T.success, label: "Strong" };
+// ─── Storage keys (centralized) ─────────────────────────────────────────────
+const StorageKeys = {
+  TOKEN: "token",
+  USERNAME: "username",
+  FULL_NAME: "fullName",
+  EMAIL: "email",
+  PROFILE_PICTURE: "profilePicture",
+  PROVIDER: "provider",
+  THEME: "theme",
+} as const;
+
+const SESSION_STORAGE_KEYS: string[] = [
+  StorageKeys.TOKEN,
+  StorageKeys.USERNAME,
+  StorageKeys.FULL_NAME,
+  StorageKeys.EMAIL,
+  StorageKeys.PROFILE_PICTURE,
+  StorageKeys.PROVIDER,
+  StorageKeys.THEME,
+];
+
+// ─── Safe AsyncStorage helpers (every call wrapped in try/catch) ───────────
+const safeMultiSet = async (pairs: [string, string][]): Promise<boolean> => {
+  try {
+    await AsyncStorage.multiSet(pairs);
+    return true;
+  } catch (err) {
+    console.error("[SignUp] Failed to write session data to AsyncStorage", err);
+    return false;
+  }
+};
+
+const safeMultiRemove = async (keys: string[]): Promise<void> => {
+  try {
+    await AsyncStorage.multiRemove(keys);
+  } catch (err) {
+    console.error("[SignUp] Failed to clear AsyncStorage keys", err);
+  }
+};
+
+// Thrown internally when a successful auth response can't be persisted.
+class SessionStorageError extends Error {
+  constructor() {
+    super("SESSION_STORAGE_FAILED");
+    this.name = "SessionStorageError";
+  }
 }
 
+// ─── Types ───────────────────────────────────────────────────────────────
+interface MeResponse {
+  id?: number | string;
+  username?: string;
+  fullName?: string;
+  full_name?: string;
+  email?: string;
+  profilePicture?: string;
+  profile_picture?: string;
+  provider?: string;
+}
+
+interface SignUpApiResponse {
+  message?: string;
+}
+
+interface GoogleLoginApiResponse {
+  accessToken?: string;
+}
+
+interface ApiErrorPayload {
+  message?: string;
+}
+
+type FieldErrors = Partial<
+  Record<"fullName" | "username" | "email" | "password" | "confirm", string>
+>;
+
+// Helper: pull a profile picture URL out of a backend response
+const extractProfilePicture = (data: MeResponse | undefined): string => {
+  return data?.profilePicture ?? data?.profile_picture ?? "";
+};
+
 // ─── /users/me fetch + storage ──────────────────────────────────────────────
-const fetchMeAndStore = async (accessToken) => {
-  const meResponse = await axios.get(`${API_URL}/users/me`, {
+const fetchMeAndStore = async (
+  accessToken: string,
+  signal?: AbortSignal
+): Promise<MeResponse> => {
+  const meResponse = await axios.get<MeResponse>(`${BASE_URL}/users/me`, {
     headers: { Authorization: `Bearer ${accessToken}` },
     timeout: 15000,
+    signal,
   });
 
-  const me = meResponse.data ?? {};
+  const me: MeResponse = meResponse.data ?? {};
 
-  await AsyncStorage.multiSet([
-    ["token", accessToken],
-    ["username", me.username ?? ""],
-    ["fullName", me.fullName ?? me.full_name ?? ""],
-    ["email", me.email ?? ""],
-    ["profilePicture", me.profilePicture ?? me.profile_picture ?? ""],
-    ["provider", me.provider ?? ""],
-    ["theme", "dark"],
+  const stored = await safeMultiSet([
+    [StorageKeys.TOKEN, accessToken],
+    [StorageKeys.USERNAME, me.username ?? ""],
+    [StorageKeys.FULL_NAME, me.fullName ?? me.full_name ?? ""],
+    [StorageKeys.EMAIL, me.email ?? ""],
+    [StorageKeys.PROFILE_PICTURE, extractProfilePicture(me)],
+    [StorageKeys.PROVIDER, me.provider ?? ""],
+    [StorageKeys.THEME, "dark"],
   ]);
+
+  if (!stored) {
+    await safeMultiRemove(SESSION_STORAGE_KEYS);
+    throw new SessionStorageError();
+  }
+
   return me;
 };
 
-/** Check if error is due to invalid credentials or conflict */
-const isInvalidCredentialsError = (error) => {
-  if (!error) return false;
-  
-  if (error?.response?.status === 400 || 
-      error?.response?.status === 401 || 
-      error?.response?.status === 409) return true;
-  
-  const message = error?.response?.data?.message || 
-                  (typeof error?.response?.data === "string" ? error.response.data : "") ||
-                  error?.message || "";
-  
-  return message.toLowerCase().includes("already exists") ||
-         message.toLowerCase().includes("taken") ||
-         message.toLowerCase().includes("invalid") ||
-         message.toLowerCase().includes("credentials") ||
-         message.toLowerCase().includes("incorrect") ||
-         message.toLowerCase().includes("not found") ||
-         message.toLowerCase().includes("exists");
+/** Determines if an error is due to invalid/conflicting sign-up data. */
+const isInvalidCredentialsError = (error: unknown): boolean => {
+  if (!axios.isAxiosError(error)) return false;
+  const axiosError = error as AxiosError<ApiErrorPayload | string>;
+  const status = axiosError.response?.status;
+  if (status === undefined) return false;
+
+  if (status === 400 || status === 401 || status === 409) return true;
+
+  const data = axiosError.response?.data;
+  const message = typeof data === "string" ? data : data?.message ?? "";
+  const lowerMsg = message.toLowerCase();
+  return (
+    lowerMsg.includes("already exists") ||
+    lowerMsg.includes("taken") ||
+    lowerMsg.includes("invalid") ||
+    lowerMsg.includes("credentials") ||
+    lowerMsg.includes("incorrect") ||
+    lowerMsg.includes("not found") ||
+    lowerMsg.includes("exists")
+  );
 };
 
-/** Check if error is network-related */
-const isNetworkError = (error) => {
-  return error?.code === "ERR_NETWORK" || 
-         error?.code === "ECONNABORTED" ||
-         error?.message?.includes("network") ||
-         error?.message?.includes("timeout") ||
-         error?.code === "ETIMEDOUT";
+/** Was this error a request abort (e.g. component unmounted mid-request)? */
+const isAbortError = (error: unknown): boolean => {
+  if (axios.isCancel(error)) return true;
+  if (axios.isAxiosError(error) && error.code === "ERR_CANCELED") return true;
+  return false;
 };
 
 /** Turns a caught axios/native error into a user-safe status line. */
-const describeSignUpError = (error) => {
+const describeSignUpError = (error: unknown): string => {
   if (!error) {
     return "An unknown error occurred. Please wait 1 minute and try again.";
   }
-  
+
   if (isInvalidCredentialsError(error)) {
-    const status = error.response?.status;
-    const serverMsg = error.response?.data?.message ||
-                      (typeof error.response?.data === "string" ? error.response.data : "");
-    
+    const axiosError = error as AxiosError<ApiErrorPayload | string>;
+    const status = axiosError.response?.status;
+    const data = axiosError.response?.data;
+    const serverMsg = typeof data === "string" ? data : data?.message;
+
     if (status === 409) {
       return serverMsg || "Username or email already exists.";
     }
     return serverMsg || "Invalid information provided.";
   }
-  
-  if (isNetworkError(error)) {
-    return "Unable to connect to server. Please wait 1 minute and try again.";
-  }
-  
+
   return "Please wait 1 minute before trying again.";
 };
 
-// ─── Rate Limiting ───────────────────────────────────────────────────────────
-const checkRateLimit = (attemptCount, isBlocked, blockedUntil, setIsBlocked, setAttemptCount, setBlockedUntil) => {
-  if (isBlocked) {
-    const remainingTime = Math.ceil((blockedUntil - Date.now()) / 60000);
-    if (remainingTime > 0) {
-      Alert.alert("Too Many Attempts", `Please wait ${remainingTime} minute(s) before trying again.`);
-      return false;
-    } else {
-      setAttemptCount(0);
-      setIsBlocked(false);
-      setBlockedUntil(null);
-      return true;
-    }
-  }
-  return true;
-};
+// ─── Rate limiting ───────────────────────────────────────────────────────────
+const MAX_ATTEMPTS = 3;
+const BLOCK_DURATION_MS = 5 * 60 * 1000; // 5 minutes
 
-const incrementAttempt = (attemptCount, setAttemptCount, setIsBlocked, setBlockedUntil) => {
-  const newCount = attemptCount + 1;
-  setAttemptCount(newCount);
-  if (newCount >= 3) {
-    const blockTime = Date.now() + 5 * 60 * 1000;
-    setBlockedUntil(blockTime);
-    setIsBlocked(true);
-    Alert.alert("Too Many Attempts", "You've exceeded the maximum attempts. Please wait 5 minutes before trying again.");
-    return false;
-  }
-  return true;
-};
+interface RateLimitState {
+  attemptCount: number;
+  isBlocked: boolean;
+  blockedUntil: number | null;
+}
 
 export default function SignUp() {
   const [fullName, setFullName] = useState("");
@@ -178,18 +262,28 @@ export default function SignUp() {
   const [confirm, setConfirm] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
-  const [errors, setErrors] = useState({});
+  const [errors, setErrors] = useState<FieldErrors>({});
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
-  const [focusedField, setFocusedField] = useState(null);
-  const [attemptCount, setAttemptCount] = useState(0);
-  const [blockedUntil, setBlockedUntil] = useState(null);
-  const [isBlocked, setIsBlocked] = useState(false);
+  const [focusedField, setFocusedField] = useState<string | null>(null);
+
+  const [rateLimit, setRateLimit] = useState<RateLimitState>({
+    attemptCount: 0,
+    isBlocked: false,
+    blockedUntil: null,
+  });
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(18)).current;
   const logoScale = useRef(new Animated.Value(0.85)).current;
   const googleButtonScale = useRef(new Animated.Value(1)).current;
+
+  // Guards against duplicate submissions (covers rapid/double taps that
+  // could race ahead of the `loading` state update).
+  const isSubmittingRef = useRef(false);
+  const isMountedRef = useRef(true);
+  const signUpAbortControllerRef = useRef<AbortController | null>(null);
+  const googleAbortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     Animated.parallel([
@@ -199,16 +293,31 @@ export default function SignUp() {
     ]).start();
   }, [fadeAnim, slideAnim, logoScale]);
 
-  const clearError = (key) =>
+  // Configure Google Sign-In exactly once, only if the client ID is valid.
+  useEffect(() => {
+    configureGoogleSignInOnce();
+  }, []);
+
+  // Abort any in-flight requests and mark unmounted on teardown.
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      signUpAbortControllerRef.current?.abort();
+      googleAbortControllerRef.current?.abort();
+    };
+  }, []);
+
+  const clearError = (key: keyof FieldErrors) =>
     setErrors((e) => ({ ...e, [key]: undefined }));
 
-  const validate = () => {
-    const e = {};
+  const validate = (): boolean => {
+    const e: FieldErrors = {};
     if (!fullName.trim()) e.fullName = "Full name is required";
     if (!username.trim()) e.username = "Username is required";
     else if (username.trim().length < 3) e.username = "At least 3 characters";
     if (!email.trim()) e.email = "Email is required";
-    else if (!isEmail(email.trim())) e.email = "Enter a valid email";
+    else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) e.email = "Enter a valid email";
     if (!password) e.password = "Password is required";
     else if (password.length < 6) e.password = "At least 6 characters";
     if (!confirm) e.confirm = "Please confirm your password";
@@ -235,58 +344,132 @@ export default function SignUp() {
     }).start();
   };
 
+  /** Returns true if the request may proceed; false (with an alert) if blocked. */
+  const checkRateLimit = (): boolean => {
+    if (rateLimit.isBlocked && rateLimit.blockedUntil) {
+      const remainingMs = rateLimit.blockedUntil - Date.now();
+      if (remainingMs > 0) {
+        Alert.alert(
+          "Too Many Attempts",
+          `Please wait ${Math.ceil(remainingMs / 60000)} minute(s) before trying again.`
+        );
+        return false;
+      }
+      // Block window has passed — reset.
+      setRateLimit({ attemptCount: 0, isBlocked: false, blockedUntil: null });
+    }
+    return true;
+  };
+
+  /** Records a failed attempt; returns false if this attempt tripped the block. */
+  const registerFailedAttempt = (): void => {
+    setRateLimit((prev) => {
+      const nextCount = prev.attemptCount + 1;
+      if (nextCount >= MAX_ATTEMPTS) {
+        Alert.alert(
+          "Too Many Attempts",
+          "You've exceeded the maximum attempts. Please wait 5 minutes before trying again."
+        );
+        return {
+          attemptCount: nextCount,
+          isBlocked: true,
+          blockedUntil: Date.now() + BLOCK_DURATION_MS,
+        };
+      }
+      return { ...prev, attemptCount: nextCount };
+    });
+  };
+
+  const resetRateLimit = () =>
+    setRateLimit({ attemptCount: 0, isBlocked: false, blockedUntil: null });
+
   // ─── Email / Password Sign Up ───────────────────────────────────────────
   const handleSignUp = async () => {
+    if (isSubmittingRef.current || loading) return;
     if (!validate()) return;
-    
-    if (!checkRateLimit(attemptCount, isBlocked, blockedUntil, setIsBlocked, setAttemptCount, setBlockedUntil)) return;
-    
+    if (!checkRateLimit()) return;
+
+    if (!ENV_READY) {
+      Alert.alert("Sign Up Failed", "App is not configured correctly. Please contact support.");
+      return;
+    }
+
+    isSubmittingRef.current = true;
+    setLoading(true);
+
+    const controller = new AbortController();
+    signUpAbortControllerRef.current = controller;
+
     try {
-      setLoading(true);
-      const response = await axios.post(
-        `${API_URL}/api/auth/signup`,
+      const response = await axios.post<SignUpApiResponse>(
+        `${BASE_URL}/auth/signup`,
         {
           username: username.trim(),
           fullName: fullName.trim(),
           email: email.trim(),
           password,
         },
-        { timeout: 15000 }
+        { timeout: 15000, signal: controller.signal }
       );
-      
+
+      if (!isMountedRef.current) return;
+
       const data = response.data;
-      
-      setAttemptCount(0);
-      setIsBlocked(false);
-      setBlockedUntil(null);
-      
+      resetRateLimit();
+      setPassword("");
+      setConfirm("");
+
       Alert.alert("Account Created", data.message || "You're all set.", [
         { text: "Sign In", onPress: () => router.replace("/login") },
       ]);
-    } catch (error) {
-      incrementAttempt(attemptCount, setAttemptCount, setIsBlocked, setBlockedUntil);
-      
+    } catch (error: unknown) {
+      if (isAbortError(error)) return;
+      if (!isMountedRef.current) return;
+
+      registerFailedAttempt();
+
       if (isInvalidCredentialsError(error)) {
-        const message = error?.response?.data?.message || 
-                        (typeof error?.response?.data === "string" ? error.response.data : "") ||
-                        "Username or email already exists.";
+        const axiosError = error as AxiosError<ApiErrorPayload | string>;
+        const data = axiosError.response?.data;
+        const message =
+          (typeof data === "string" ? data : data?.message) ||
+          "Username or email already exists.";
         Alert.alert("Sign Up Failed", message);
       } else {
-        const message = describeSignUpError(error);
-        Alert.alert("Sign Up Failed", message);
+        Alert.alert("Sign Up Failed", describeSignUpError(error));
       }
     } finally {
-      setLoading(false);
+      isSubmittingRef.current = false;
+      signUpAbortControllerRef.current = null;
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
   // ─── Google Sign-Up Handler ──────────────────────────────────────────────
   const handleGoogleSignUp = async () => {
-    if (googleLoading || loading) return;
+    if (isSubmittingRef.current || googleLoading || loading) return;
+    if (!checkRateLimit()) return;
+
+    if (!GOOGLE_ENV_READY) {
+      Alert.alert("Sign Up Failed", "Google sign-in is not configured correctly. Please contact support.");
+      return;
+    }
+    if (!ENV_READY) {
+      Alert.alert("Sign Up Failed", "App is not configured correctly. Please contact support.");
+      return;
+    }
+
+    configureGoogleSignInOnce();
+
+    isSubmittingRef.current = true;
+    setGoogleLoading(true);
+
+    const controller = new AbortController();
+    googleAbortControllerRef.current = controller;
 
     try {
-      setGoogleLoading(true);
-
       await GoogleSignin.hasPlayServices({ showPlayServicesUpdateDialog: true });
 
       try {
@@ -298,7 +481,6 @@ export default function SignUp() {
       const response = await GoogleSignin.signIn();
 
       if (!isSuccessResponse(response)) {
-        setGoogleLoading(false);
         return;
       }
 
@@ -306,43 +488,52 @@ export default function SignUp() {
 
       if (!idToken) {
         Alert.alert("Sign Up Failed", "Google didn't return an ID token. Please try again.");
-        setGoogleLoading(false);
+        registerFailedAttempt();
         return;
       }
 
-      let backendResponse;
-      try {
-        backendResponse = await axios.post(
-          `${API_URL}/auth/google/login`,
-          { idToken },
-          { timeout: 15000 }
-        );
-      } catch (backendErr) {
-        throw backendErr;
-      }
+      // Fixed: was previously hitting `${API_URL}/auth/google/login`
+      // (missing the `/api` prefix used by the manual sign-up endpoint),
+      // which caused this request to 404 against a mismatched route.
+      const backendResponse = await axios.post<GoogleLoginApiResponse>(
+        `${BASE_URL}/auth/google/login`,
+        { idToken },
+        { timeout: 15000, signal: controller.signal }
+      );
+
+      if (!isMountedRef.current) return;
 
       const data = backendResponse.data;
 
       if (!data?.accessToken) {
         Alert.alert("Sign Up Failed", "Server did not return an access token. Please wait 1 minute and try again.");
+        registerFailedAttempt();
         return;
       }
 
-      let me = {};
+      let me: MeResponse = {};
       try {
-        me = await fetchMeAndStore(data.accessToken);
-      } catch (meError) {
-        Alert.alert("Sign Up Failed", "Signed in, but couldn't load your profile. Please wait 1 minute and try again.");
+        me = await fetchMeAndStore(data.accessToken, controller.signal);
+      } catch (meError: unknown) {
+        if (!isMountedRef.current) return;
+        if (meError instanceof SessionStorageError) {
+          Alert.alert("Sign Up Failed", "Signed in, but we couldn't save your session. Please try again.");
+        } else {
+          Alert.alert("Sign Up Failed", "Signed in, but couldn't load your profile. Please wait 1 minute and try again.");
+        }
         return;
       }
+
+      if (!isMountedRef.current) return;
+      resetRateLimit();
 
       Alert.alert("Account Created", `Welcome ${me.fullName ?? me.full_name ?? ""}`, [
-        {
-          text: "OK",
-          onPress: () => router.replace("/(tabs)/dashboard"),
-        },
+        { text: "OK", onPress: () => router.replace("/(tabs)/dashboard") },
       ]);
-    } catch (error) {
+    } catch (error: unknown) {
+      if (isAbortError(error)) return;
+      if (!isMountedRef.current) return;
+
       if (isErrorWithCode(error) && error.code === statusCodes.SIGN_IN_CANCELLED) {
         // User cancelled, do nothing
       } else if (isErrorWithCode(error) && error.code === statusCodes.IN_PROGRESS) {
@@ -350,24 +541,57 @@ export default function SignUp() {
       } else if (isErrorWithCode(error) && error.code === statusCodes.PLAY_SERVICES_NOT_AVAILABLE) {
         Alert.alert("Sign Up Failed", "Google Play Services unavailable. Please update and try again.");
       } else {
-        if (isInvalidCredentialsError(error)) {
-          const message = error?.response?.data?.message || 
-                          (typeof error?.response?.data === "string" ? error.response.data : "") ||
-                          "Sign up failed. Please try again.";
+        registerFailedAttempt();
+        if (axios.isAxiosError(error) && isInvalidCredentialsError(error)) {
+          const axiosError = error as AxiosError<ApiErrorPayload | string>;
+          const data = axiosError.response?.data;
+          const message =
+            (typeof data === "string" ? data : data?.message) || "Sign up failed. Please try again.";
           Alert.alert("Sign Up Failed", message);
         } else {
-          const message = describeSignUpError(error);
-          Alert.alert("Sign Up Failed", message);
+          Alert.alert("Sign Up Failed", describeSignUpError(error));
         }
       }
     } finally {
-      setGoogleLoading(false);
+      isSubmittingRef.current = false;
+      googleAbortControllerRef.current = null;
+      if (isMountedRef.current) {
+        setGoogleLoading(false);
+      }
     }
+  };
+
+  const getStrength = (pwd: string) => {
+    if (!pwd.length) return { width: 0, color: T.textFaint, label: "" };
+    const score = [
+      pwd.length >= 8,
+      /[A-Z]/.test(pwd),
+      /[a-z]/.test(pwd),
+      /[0-9]/.test(pwd),
+      /[^A-Za-z0-9]/.test(pwd),
+    ].filter(Boolean).length;
+    if (score <= 2) return { width: 33, color: T.danger, label: "Weak" };
+    if (score <= 3) return { width: 66, color: T.warning, label: "Fair" };
+    return { width: 100, color: T.success, label: "Strong" };
   };
 
   const strength = getStrength(password);
 
-  const renderField = (opts) => {
+  type FieldKey = "fullName" | "username" | "email" | "password" | "confirm";
+
+  const renderField = (opts: {
+    field: FieldKey;
+    label: string;
+    icon: keyof typeof Feather.glyphMap;
+    value: string;
+    onChangeText: (t: string) => void;
+    placeholder: string;
+    secure?: boolean;
+    toggleSecure?: () => void;
+    secureVisible?: boolean;
+    keyboardType?: "default" | "email-address";
+    autoCapitalize?: "none" | "words" | "sentences" | "characters";
+  }) => {
     const {
       field, label, icon, value, onChangeText, placeholder,
       secure, toggleSecure, secureVisible, keyboardType, autoCapitalize,
